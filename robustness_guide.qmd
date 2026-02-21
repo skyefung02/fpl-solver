@@ -1,0 +1,235 @@
+---
+title: "FPL Solver — Personal Reference Guide"
+author: "Skye Fung"
+date: last-modified
+format:
+  pdf:
+    toc: true
+    toc-depth: 2
+    geometry: margin=2.5cm
+    fontsize: 11pt
+    colorlinks: true
+---
+
+# Overview
+
+The solver uses **Integer Linear Programming (ILP)** via the HiGHS solver to find the mathematically optimal FPL squad and transfer plan. Unlike heuristic tools, it *proves* global optimality — there is no better solution within the constraints you set.
+
+Two main workflows:
+
+| Workflow | File | Use when |
+|---|---|---|
+| Single linear solve | `run/solve.py` | Getting your primary recommendation |
+| Robustness analysis | `run/run_parallel.py` | Stress-testing that recommendation across projection uncertainty |
+
+Always run a **single solve first**, then use the **robustness analysis** to check whether that recommendation is fragile or robust.
+
+---
+
+# Setup: `user_settings.json`
+
+Located at `data/user_settings.json`. Edit this before running anything.
+
+```json
+{
+    "datasource": "projection",
+    "team_data": "id",
+    "team_id": 79999,
+    "horizon": 10,
+    "no_transfer_last_gws": 2,
+    "decay_base": 0.9,
+    "banned": [],
+    "locked": [],
+    "use_wc": [32],
+    "use_bb": [33],
+    "use_fh": [34],
+    "use_tc": [],
+    "verbose": true
+}
+```
+
+**Key fields to know:**
+
+| Field | What it does | Typical values |
+|---|---|---|
+| `datasource` | Which projection file to use | `"projection"` |
+| `team_id` | Your FPL team ID | Your ID |
+| `horizon` | How many GWs ahead to optimise | `8`–`10` for single solve |
+| `decay_base` | How much to discount future GWs | `0.9` (don't change) |
+| `no_transfer_last_gws` | Locks transfers off in final N GWs of horizon | `2` |
+| `use_wc` / `use_bb` / `use_fh` / `use_tc` | Force chip in specific GW(s) | `[32]` or `[]` |
+| `banned` | Player IDs to exclude entirely | `[123, 456]` or `[]` |
+| `locked` | Player IDs to keep in squad for whole horizon | `[789]` or `[]` |
+
+> **Chip syntax:** `[32]` forces the chip in GW32. `[]` means the chip won't be used. You can list multiple GWs (e.g. `[32, 33]`) to tell the solver it *can* use the chip in either — it picks the better one.
+
+---
+
+# Single Linear Solve
+
+## When to use it
+
+- Weekly recommendation: what transfer(s) to make and what lineup to set
+- Checking a specific constraint (e.g. "what if I lock Salah in?")
+
+## How to run
+
+From the repo root:
+
+```bash
+cd /Users/fungs4/Desktop/Skye/Self\ Education/open-fpl-solver
+PYTHONPATH=. python run/solve.py
+```
+
+Or from the `run/` directory if your `.pth` file is set up:
+
+```bash
+python solve.py
+```
+
+## Reading the output
+
+The solver prints a results table like:
+
+```
+iter    sell       buy       chip    score
+0       -          -         WC32    312.4
+1       Mbeumo     Palmer    WC32    310.1
+```
+
+- **iter 0** is always the top-ranked solution — use this as your primary recommendation
+- **sell/buy** = transfers for the *next* gameweek only
+- **chip** = which chip is played and in which GW across the horizon
+- **score** = decay-weighted total xP across the horizon (not comparable across different runs)
+
+The transfer summary printed below the table shows the full plan GW-by-GW.
+
+---
+
+# Robustness Analysis
+
+## Why use it
+
+The single solve is optimal given the projections — but projections are uncertain. Robustness analysis runs **N solves with different random noise** applied to each player's xP. Players that appear as transfers across *most* runs are robust picks; those that appear rarely are projection-sensitive.
+
+Think of it as a Monte Carlo stress test: you're asking "does this recommendation hold up even if the projections are slightly wrong?"
+
+## How to run
+
+From the `run/` directory:
+
+```bash
+python run_parallel.py
+```
+
+Key settings are at the top of `__main__` in `run/run_parallel.py`:
+
+```python
+N_RUNS = 50                  # number of solves — see signal strength section
+scenarios = [{"randomized": True,
+              "randomization_seed": i,
+              "randomization_strength": 1.2}
+             for i in range(N_RUNS)]
+```
+
+Inside `run_parallel_solves()`, the `options` dict controls solver behaviour:
+
+```python
+options = {
+    "horizon": 6,    # shorter than single solve — keeps runtime manageable
+    "gap": 0.002,    # stop when within 0.2% of optimal (speeds things up)
+    "parallel": "off",  # critical on macOS — don't change
+    ...
+}
+```
+
+> **Chip filter:** Chips from `user_settings.json` that fall *outside* the 6-GW horizon are automatically dropped with a warning printed at startup. Chips *inside* the horizon (e.g. WC32 when next GW is 27) are kept and enforced in every solve.
+
+## Key settings to tweak
+
+| Setting | Where | Effect |
+|---|---|---|
+| `N_RUNS` | `run_parallel.py` `__main__` | More runs = narrower confidence intervals. Sweet spot: 50–100. |
+| `randomization_strength` | `run_parallel.py` `__main__` | How much noise. `1.0` = standard, `1.2` = more aggressive, `1.5`+ = very aggressive. Players with low xMins get proportionally more noise. |
+| `horizon` | `run_parallel_solves()` options | Shorter = faster. `6` is a good default for parallel runs. |
+| `gap` | `run_parallel_solves()` options | `0.002` = stop within 0.2% of optimal. Fine for robustness. `0` = exact but slower. |
+
+## Reading the output
+
+The terminal prints two tables after all solves complete.
+
+**ACTION FREQUENCY** — what the solver recommended doing in GW27 (the next GW), across all N runs:
+
+```
+Action                  Count    %    Signal
+--------------------  -------  ---  --------
+Roll                       32   64%  Very Strong
+Rice → Semenyo              4    8%  Noise
+Mbeumo → Garner             2    4%  Noise
+```
+
+- `Roll` = no transfer made. If this dominates, hold your transfers.
+- Other rows = specific transfer combinations the solver preferred in some runs.
+
+**PLAYER FREQUENCY** — individual player mentions aggregated across all actions:
+
+```
+Player      Dir     Count    %    Signal
+----------  ----  -------  ---  --------
+Mbeumo      SELL        8   16%  Weak
+Rice        SELL        7   14%  Weak
+Palmer      BUY         5   10%  Noise
+```
+
+---
+
+# Signal Strength
+
+Signal strength is based on the **lower bound of the 95% confidence interval**:
+
+$$\text{lower bound} = p - 1.96\sqrt{\frac{p(1-p)}{N}}$$
+
+If the lower bound touches zero, the observed frequency is statistically indistinguishable from noise.
+
+**Thresholds (approximate) by N:**
+
+| Signal | N = 20 | N = 50 | N = 100 |
+|---|---|---|---|
+| Noise | < 22% | < 8% | < 5% |
+| Weak | 22–38% | 8–20% | 5–14% |
+| Moderate | 38–50% | 20–30% | 14–22% |
+| Strong | 50–65% | 30–45% | 22–35% |
+| Very Strong | > 65% | > 45% | > 35% |
+
+> The signal strength labels in `run_parallel.py` automatically adjust to whatever `N_RUNS` you set — they always use the actual formula, not hardcoded numbers.
+
+## What to act on
+
+- **Very Strong / Strong** → high conviction, act on it
+- **Moderate** → worth considering, especially if it aligns with your own view
+- **Weak** → note it but don't act without other evidence
+- **Noise** → ignore
+
+**Context matters a lot.** Pre-wildcard, even a Moderate sell signal may not be worth acting on — the wildcard will reset the squad anyway. The most useful signal pre-chip is usually the *Roll* frequency: if >50% of runs say hold, hold.
+
+## Choosing N_RUNS
+
+- **N = 20** — quick sanity check, rough signal only
+- **N = 50** — standard. Good balance of runtime vs resolution. Noise threshold ~8%.
+- **N = 100** — higher stakes decisions. Noise threshold ~5%. Roughly 2× runtime.
+
+Going beyond 100 has diminishing returns for most decisions.
+
+---
+
+# Workflow Summary
+
+1. **Update projections** in `data/`
+2. **Edit `user_settings.json`** — set chips, horizon, banned/locked players
+3. **Run single solve**: `PYTHONPATH=. python run/solve.py` from repo root
+4. **Read the output** — note the iter 0 recommendation
+5. **Run robustness analysis**: `python run_parallel.py` from `run/`
+6. **Read signal strength** — focus on Roll %, then player-level SELL signals
+7. **Decide** — act on Moderate+ signals; hold if Roll is Very Strong
+
+> Full raw results from the parallel solve are always saved to `run/chip_solve.csv` if you want to dig deeper.
