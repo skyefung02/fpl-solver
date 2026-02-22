@@ -1,5 +1,5 @@
 {
-    "datasource": "projection",
+    "datasource": "projection_all_metrics",
     "team_data": "id",
     "team_id": 79999,
     "horizon": 10,
