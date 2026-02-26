@@ -192,8 +192,9 @@ def run_parallel_solves(chip_combinations, max_workers=None, suppress_output=Tru
         "print_transfer_chip_summary": False,
         "print_squads": False,
         "parallel": "off",
-        "horizon": 6, 
-        "gap": 0.002  
+        "horizon": 6,
+        "gap": 0.002,
+        "num_iterations": 1
     }
 
     # Auto-filter chip constraints outside the parallel solver's shorter horizon.

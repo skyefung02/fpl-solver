@@ -185,19 +185,6 @@ def print_stats(player: dict, pts: np.ndarray) -> None:
     print(f"  90th pctile    : {np.percentile(pts, 90):.0f}")
     print(f"  95th pctile    : {np.percentile(pts, 95):.0f}")
 
-    # Component breakdown
-    pos         = player["pos"]
-    p_pen       = player["p_pen"]
-    pen_miss_ev = p_pen * (1 - player["pen_conv"]) * abs(PENALTY_MISS_PTS)
-
-    print(f"\n  EV breakdown (all values in points):")
-    print(f"    goals {player['goals'] * GOAL_PTS[pos]:.2f} ({player['goals']:.3f} goals×{GOAL_PTS[pos]}pt)  |  "
-          f"assists {player['assists'] * ASSIST_PTS:.2f}  |  "
-          f"CS {player['cs'] * CS_PTS[pos]:.2f}  |  bonus {player['bonus']:.2f}  |  "
-          f"CBIT {player['cbit'] * CBIT_PTS:.2f}")
-    if p_pen > 0:
-        print(f"    pen miss risk: P(take)={p_pen:.2f} × P(miss)={1-player['pen_conv']:.2f}"
-              f"  →  −{pen_miss_ev:.3f} exp pts  (not in Solio projection)")
 
 
 def plot_comparison(
@@ -247,11 +234,11 @@ def plot_comparison(
     pct_t = (diff == 0).mean() * 100
 
     # Annotate win % directly on the relevant side
-    ax2.text(0.02, 0.97, f"{p1['name']}\noutscores\n{pct1:.1f}%",
-             transform=ax2.transAxes, va="top", ha="left",
-             fontsize=10, fontweight="bold", color="C0")
-    ax2.text(0.98, 0.97, f"{p2['name']}\noutscores\n{pct2:.1f}%",
+    ax2.text(0.98, 0.97, f"{p1['name']}\noutscores\n{pct1:.1f}%",
              transform=ax2.transAxes, va="top", ha="right",
+             fontsize=10, fontweight="bold", color="C0")
+    ax2.text(0.02, 0.97, f"{p2['name']}\noutscores\n{pct2:.1f}%",
+             transform=ax2.transAxes, va="top", ha="left",
              fontsize=10, fontweight="bold", color="C1")
 
     ax2.set_xlabel(f"Points margin  ({p1['name']} − {p2['name']})", fontsize=11)

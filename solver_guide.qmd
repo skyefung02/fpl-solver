@@ -1,0 +1,534 @@
+---
+title: "FPL Solver — Personal Reference Guide"
+author: "Skye Fung"
+date: last-modified
+format:
+  pdf:
+    toc: true
+    toc-depth: 2
+    geometry: margin=2.5cm
+    fontsize: 11pt
+    colorlinks: true
+---
+
+# Overview
+
+The solver uses **Integer Linear Programming (ILP)** via the HiGHS solver to find the mathematically optimal FPL squad and transfer plan. Unlike heuristic tools, it *proves* global optimality — there is no better solution within the constraints you set.
+
+| Tool | File | Use when |
+|---|---|---|
+| Single linear solve | `run/solve.py` | Primary weekly recommendation; comparing top N transfer options |
+| Robustness analysis | `run/run_parallel.py` | Stress-testing a recommendation against projection uncertainty |
+| Path comparison | `run/compare_paths.py` | Comparing specific candidate buys head-to-head |
+| Monte Carlo simulator | `run/monte_carlo_sim.py` | Deciding between two players with similar EV |
+
+**Recommended weekly workflow:**
+
+1. Run single solve → get primary recommendation and ranked alternatives
+2. Run robustness analysis → confirm sell signals; check Roll %
+3. If buy side is uncertain, run path comparison → rank candidate buys by score
+4. If two candidates remain close, run Monte Carlo → compare distributions
+
+---
+
+# Setup: `user_settings.json`
+
+Located at `data/user_settings.json`. Edit this before running anything. Settings here override the defaults in `data/comprehensive_settings.json`.
+
+```json
+{
+    "datasource": "projection_all_metrics",
+    "team_data": "id",
+    "team_id": 79999,
+    "horizon": 10,
+    "no_transfer_last_gws": 2,
+    "decay_base": 0.9,
+    "ft_value_list": {
+        "2": 2,
+        "3": 1.6,
+        "4": 1.3,
+        "5": 1.1
+    },
+    "xmin_lb": 450,
+    "ev_per_price_cutoff": 30,
+    "keep_top_ev_percent": 5,
+    "banned": [],
+    "locked": [],
+    "use_wc": [32],
+    "use_bb": [33],
+    "use_fh": [34],
+    "use_tc": [],
+    "verbose": true,
+    "num_iterations": 5,
+    "iteration_criteria": "this_gw_transfer_in_out"
+}
+```
+
+**Key fields:**
+
+| Field | What it does | Notes |
+|---|---|---|
+| `datasource` | Projection CSV to use (without `.csv`) | Must exist in `data/` |
+| `team_id` | Your FPL team ID | Used to fetch squad via API |
+| `horizon` | GWs ahead to optimise | `10` for single solve |
+| `no_transfer_last_gws` | Disables transfers in final N GWs of horizon | Prevents speculative late-horizon moves |
+| `decay_base` | Discounts future GW scores | `0.9` — don't change |
+| `use_wc/bb/fh/tc` | Force chip in specific GW(s) | `[32]` = force in GW32; list multiple to let solver choose |
+| `banned` | Player IDs excluded from pool entirely | Applies across all GWs |
+| `locked` | Player IDs kept in squad for whole horizon | Forces retention across all GWs |
+| `xmin_lb` | Minimum total expected minutes across horizon | `450` ≈ 5 full games; filters benchwarmers |
+| `ev_per_price_cutoff` | Drops bottom N% of players by EV/price | `30` = remove bottom 30% by value efficiency |
+| `keep_top_ev_percent` | Keeps top N% by raw EV regardless of minutes | `5` = top 5% always survive the pool filter |
+| `num_iterations` | Number of ranked solutions from single solve | `5` gives top 5 alternatives |
+| `iteration_criteria` | What counts as "different" between iterations | `this_gw_transfer_in_out` = differs on buy or sell |
+
+> **Player pool filtering order:** `xmin_lb` first (drops low-minute players), then `ev_per_price_cutoff` (drops low-value players). Your current squad, `locked` players, and top `keep_top_ev_percent` EV players are all exempt from both filters.
+
+> **Chip syntax:** `[32]` forces the chip in GW32. `[]` means the chip won't be used. Multiple GWs, e.g. `[31, 32, 33]`, lets the solver pick the best one within that window.
+
+---
+
+# Single Linear Solve
+
+## When to use it
+
+- Primary weekly recommendation
+- Comparing the top N transfer options in a single run
+- Checking a specific constraint (e.g. "what if I lock Salah in?")
+
+## How to run
+
+From the repo root:
+
+```bash
+PYTHONPATH=. python run/solve.py
+```
+
+Or from the `run/` directory:
+
+```bash
+python solve.py
+```
+
+## Understanding `num_iterations`
+
+With `num_iterations: 5`, the solver runs five sequential passes. After each solution, a constraint is added forcing the next pass to find a *different* answer. The result is five ranked alternatives, each the best plan that differs from all previous ones on the GW28 transfer.
+
+`iteration_criteria` controls what "different" means:
+
+| Value | What forces the next iteration to differ |
+|---|---|
+| `this_gw_transfer_in_out` | Must differ on the buy or the sell this GW (default) |
+| `this_gw_transfer_in` | Must bring in at least one different player |
+| `this_gw_transfer_out` | Must sell at least one different player |
+| `this_gw_lineup` | Must change at least one starting 11 player |
+| `chip_gws` | Must use chips in different GWs |
+
+## Reading the output
+
+The results table printed at the end:
+
+```
+iter  sell           buy             chip              score
+0     Enzo, Muñoz    Virgil, Ndiaye  WC32, BB33, FH34  446.95
+1     Enzo, Muñoz    Virgil, Wilson  WC32, BB33, FH34  446.75
+2     Muñoz          Virgil          WC32, BB33, FH34  446.70
+3     Enzo, Richards Virgil, Wilson  WC32, BB33, FH34  446.65
+4     Enzo           Ndiaye          WC32, BB33, FH34  446.61
+```
+
+- **iter 0** is always the top-ranked solution
+- **sell/buy** = transfers for the *next* GW only
+- **chip** = chip(s) played and in which GW(s) across the horizon
+- **score** = decay-weighted total xP across the horizon (not comparable across runs with different settings)
+
+**Reading a tight score spread:** A 0.34pt gap across a 10 GW horizon means the GW28 transfer decision is genuinely marginal. Focus on what the iterations *agree* on — those are the high-conviction signals. The divergence between iterations shows the real uncertainty.
+
+---
+
+# Robustness Analysis
+
+## Why use it
+
+The single solve is optimal given the projections — but projections are uncertain. Robustness analysis runs **N solves with different random noise** applied to each player's xP. Players that appear as transfers across *most* runs are robust picks; those that appear rarely are projection-sensitive.
+
+Use it to confirm *sell* signals. The buy side is better addressed via path comparison (below), since individual buy candidates tend to scatter across many action combinations, diluting the signal.
+
+## How to run
+
+From the `run/` directory:
+
+```bash
+python run_parallel.py
+```
+
+Key settings at the top of `__main__` in `run/run_parallel.py`:
+
+```python
+N_RUNS = 50
+scenarios = [{"randomized": True,
+              "randomization_seed": i,
+              "randomization_strength": 1.2}
+             for i in range(N_RUNS)]
+```
+
+The `options` dict inside `run_parallel_solves()` controls solver behaviour for each run:
+
+```python
+options = {
+    "horizon": 6,         # shorter than single solve — keeps runtime manageable
+    "gap": 0.002,         # stop within 0.2% of optimal
+    "parallel": "off",    # critical on macOS — don't change
+    "num_iterations": 1,  # overrides user_settings.json — always 1 per robustness run
+    ...
+}
+```
+
+> **`num_iterations` override:** `user_settings.json` sets `num_iterations: 5` for the single solve. `run_parallel.py` explicitly overrides this to `1` in its options dict — each robustness run returns exactly one solution. Without this override, each of the 50 runs would do 5 iterations, making the run 5× slower for no benefit.
+
+> **Chip filter:** Chips from `user_settings.json` outside the 6-GW horizon are automatically dropped with a warning. Chips inside the horizon are enforced in every run.
+
+## Key settings to tweak
+
+| Setting | Where | Effect |
+|---|---|---|
+| `N_RUNS` | `__main__` | More runs = narrower confidence intervals. Sweet spot: 50–100 |
+| `randomization_strength` | `__main__` | `1.0` = standard, `1.2` = more aggressive, `1.5`+ = very aggressive |
+| `horizon` | `run_parallel_solves()` options | `6` is a good default. Shorter = faster |
+| `gap` | `run_parallel_solves()` options | `0.002` = stop within 0.2% of optimal. Fine for robustness |
+
+## Reading the output
+
+**ACTION FREQUENCY** — what the solver recommended in the next GW, across all N runs:
+
+```
+Action                  Count    %    Signal
+--------------------  -------  ---  --------
+Roll                       32   64%  Very Strong
+Rice → Semenyo              4    8%  Noise
+Mbeumo → Garner             2    4%  Noise
+```
+
+**PLAYER FREQUENCY** — individual player appearances aggregated across all actions:
+
+```
+Player      Dir     Count    %    Signal
+----------  ----  -------  ---  --------
+Enzo        SELL       47   94%  Very Strong
+Muñoz       SELL       38   76%  Very Strong
+Palmer      BUY         5   10%  Noise
+```
+
+Full results are saved to `run/chip_solve.csv`.
+
+## Signal strength
+
+Signal is based on the **lower bound of the 95% confidence interval**:
+
+$$\text{lower bound} = p - 1.96\sqrt{\frac{p(1-p)}{N}}$$
+
+If the lower bound touches zero, the frequency is statistically indistinguishable from noise at the current N.
+
+| Signal | N = 20 | N = 50 | N = 100 |
+|---|---|---|---|
+| Noise | < 22% | < 8% | < 5% |
+| Weak | 22–38% | 8–20% | 5–14% |
+| Moderate | 38–50% | 20–30% | 14–22% |
+| Strong | 50–65% | 30–45% | 22–35% |
+| Very Strong | > 65% | > 45% | > 35% |
+
+## What to act on
+
+- **Very Strong / Strong** → high conviction, act on it
+- **Moderate** → worth considering, especially if it aligns with your own view
+- **Weak** → note but don't act without other evidence
+- **Noise** → ignore
+
+**Context matters.** Pre-wildcard, the most useful signal is usually the *Roll* frequency — if >50% of runs say hold, hold. A Moderate sell signal may not be worth acting on if the wildcard is imminent anyway.
+
+## Choosing N_RUNS
+
+- **N = 20** — quick sanity check, rough signal only
+- **N = 50** — standard. Good balance of runtime vs resolution
+- **N = 100** — higher stakes decisions. Roughly 2× runtime
+
+---
+
+# Path Comparison
+
+## When to use it
+
+When you have a shortlist of specific buy candidates and want to rank them by score under the same sell constraints. Typical trigger: robustness analysis has confirmed who to sell with high signal, but the buy side is scattered — multiple candidates appear with weak/noise signal individually.
+
+This is a *deterministic* comparison — all paths use the same point estimates, so scores close together (< ~1 pt) should be followed up with robustness analysis per path to check which holds up better under noise.
+
+| Compare paths | Robustness analysis |
+|---|---|
+| "Which buy candidate scores highest?" | "Does this recommendation hold under projection noise?" |
+| Fixed sells, varying buys | Free solve, randomised projections |
+| Deterministic — same projections each time | Stochastic — different noise each time |
+| One solve per path | N=50 solves, aggregate signal |
+
+## How to run
+
+From the `run/` directory:
+
+```bash
+python compare_paths.py
+```
+
+## Configuration
+
+All configuration is at the top of `run/compare_paths.py` under `USER CONFIGURATION`. Three blocks to edit each week:
+
+### `SOLVER_OPTIONS`
+
+Applied to every path, overriding `user_settings.json`:
+
+```python
+SOLVER_OPTIONS = {
+    "verbose": False,
+    "print_result_table": False,
+    "print_decay_metrics": False,
+    "print_transfer_chip_summary": False,
+    "print_squads": False,
+    "parallel": "off",       # critical on macOS — don't change
+    "num_iterations": 1,
+    # "gap": 0.002,          # uncomment to trade accuracy for speed
+}
+```
+
+**`num_iterations` in path comparison:** Set to `1` for a quick headline ranking (one best solve per path). Set to `5` if you want the full ranked alternatives within each path — useful when two paths score similarly and you want to see how their plans diverge. Note that `5` iterations × many paths significantly increases runtime.
+
+**`gap`:** Commented out by default (exact solve, `gap=0`). HiGHS proves no better solution exists — a mathematical guarantee of optimality within the model. The cost is time: the solver may spend several minutes closing the final 0.2% gap after already finding a near-optimal solution. Uncomment `gap: 0.002` to cut this tail off. For path comparison, this is usually acceptable — paths that are within 0.2% of each other are effectively tied given projection noise anyway.
+
+### `FORCED_SELLS`
+
+Player IDs to force as sells this GW across **all** paths. The GW number is fetched automatically from the FPL API — no hardcoding required:
+
+```python
+FORCED_SELLS = [
+    237,   # Enzo
+    256,   # Muñoz
+]
+```
+
+Leave as `[]` if you don't want to constrain the sells (solver chooses freely).
+
+To find a player's FPL ID:
+```bash
+grep -i "playername" data/projection_all_metrics.csv | head -1
+```
+
+### `PATHS`
+
+One entry per candidate. Each entry needs a `name` and optionally `locked_next_gw` (player IDs to force into squad this GW):
+
+```python
+PATHS = [
+    {
+        "name": "Free",           # no lock — solver picks its own buy
+    },
+    {
+        "name": "Virgil",
+        "locked_next_gw": [373],
+    },
+    {
+        "name": "Ndiaye",
+        "locked_next_gw": [299],
+    },
+    {
+        "name": "Wilson",
+        "locked_next_gw": [329],
+    },
+]
+```
+
+Each path dict can also include any other solver option to override for that path only, e.g. a specific chip constraint or a second locked player.
+
+> **`locked_next_gw` vs `booked_transfers`:** `locked_next_gw` forces a player into the squad for the next GW — the solver freely chooses who to sell to fund them. `booked_transfers` can force a specific sell/buy pair: `{"gw": 28, "transfer_in": 373, "transfer_out": 237}`. You can specify `transfer_out` without `transfer_in` to force a sell while leaving the buy free.
+
+## Reading the output
+
+```
+==================================================================
+  Path Comparison — GW28, 1 iterations per path
+==================================================================
+
+HEADLINE — best iter per path, ranked by score
+Path      Sell           Buy              Chip              Score
+--------  -------------  ---------------  ----------------  ------
+Free      Enzo, Muñoz    Virgil, Ndiaye   WC32, BB33, FH34  446.95
+Virgil    Enzo, Muñoz    Virgil, Ndiaye   WC32, BB33, FH34  446.95
+Ndiaye    Enzo, Muñoz    Ndiaye, X        WC32, BB33, FH34  446.80
+Wilson    Enzo, Muñoz    Wilson, X        WC32, BB33, FH34  446.50
+Schade    Enzo, Muñoz    Schade, X        WC32, BB33, FH34  445.20
+
+
+FULL ITERATIONS BY PATH
+
+--- Free ---
+iter  sell           buy             chip              score
+0     Enzo, Muñoz    Virgil, Ndiaye  WC32, BB33, FH34  446.95
+
+--- Virgil ---
+...
+```
+
+- **HEADLINE** is your primary output — the best solve per path, sorted by score
+- **FULL ITERATIONS** shows the complete iteration breakdown per path (useful when `num_iterations > 1`)
+- Full results are saved to `run/path_comparison.csv`
+
+**Interpreting scores:** The score gap between paths directly measures the projected cost of each choice. A 1 pt gap over 10 GWs is meaningful; 0.1–0.3 pts is within projection noise and should trigger a robustness follow-up for those paths.
+
+## Killing the process
+
+`compare_paths.py` spawns one subprocess per path. If you kill the main process, the worker subprocesses survive and continue consuming CPU. To kill everything:
+
+```bash
+pkill -f compare_paths.py; kill $(pgrep -f spawn_main)
+```
+
+The same applies to `run_parallel.py`:
+
+```bash
+pkill -f run_parallel.py; kill $(pgrep -f spawn_main)
+```
+
+---
+
+# Monte Carlo Simulator
+
+## When to use it
+
+When two players have similar EV and the path comparison or single solve can't distinguish them. The ILP solver treats EV as a point estimate — a player with EV 4.6 could be near-certain 4–5 pts (low variance) or boom-or-bust 0 or 15 (high variance). The Monte Carlo simulator models the full distribution and gives a head-to-head win probability.
+
+> **Current limitations:** Not reliable for defenders (CS worth 6 pts amplifies minute uncertainty) or goalkeepers (saves unmodelled). Do not use for DGW players (`xMins` > 100). Card/own-goal risk not modelled, so simulated means will be ~0.1–0.2 pts above file EV.
+
+## Data requirements
+
+Two CSVs in `data/` must be up to date:
+
+**`data/projection_all_metrics.csv`** — main projection file, columns per GW:
+
+| Column | Description |
+|---|---|
+| `{gw}_xMins` | Expected minutes |
+| `{gw}_Pts` | Expected total FPL points (Solio, includes card/OG deductions) |
+| `{gw}_goals` | Expected goals (per GW, penalty contribution embedded) |
+| `{gw}_assists` | Expected assists |
+| `{gw}_CS` | Clean sheet probability (position-adjusted) |
+| `{gw}_bonus` | Expected bonus points |
+| `{gw}_cbit` | P(CBIT bonus), integer percentage 0–100 |
+
+**`data/penalties.csv`** — supplementary Solio export, same `{gw}_` prefix:
+
+| Column | Description |
+|---|---|
+| `{gw}_penalties` | P(player takes a penalty) — not P(scores) |
+
+Used only to model the penalty miss downside (−2 pts), which is absent from `{gw}_Pts`.
+
+## How to run
+
+From the repo root:
+
+```bash
+python run/monte_carlo_sim.py --gw 28 --player1 "Gordon" --player2 "Rice"
+```
+
+Player names must match exactly as they appear in the CSV.
+
+```bash
+# 200,000 simulations, suppress plot
+python run/monte_carlo_sim.py --gw 28 --player1 "Gordon" --player2 "Rice" \
+    --n_sims 200000 --no_plot
+
+# Custom penalty conversion rate
+python run/monte_carlo_sim.py --gw 28 --player1 "Haaland" --player2 "Salah" \
+    --pen_conv 0.78
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--gw` | *(required)* | Gameweek number |
+| `--player1` | *(required)* | First player (exact name) |
+| `--player2` | *(required)* | Second player (exact name) |
+| `--n_sims` | `100000` | Simulations. 100k is sufficient; 200k tightens win % by ~0.2pp |
+| `--seed` | `42` | RNG seed. Change to check stability |
+| `--pen_conv` | `0.76` | Penalty conversion rate (PL average) |
+| `--no_plot` | off | Suppress the matplotlib figure |
+
+## Reading the output
+
+```
+  ────────────────────────────────────
+  Gordon  (M)
+  ────────────────────────────────────
+  Simulated mean : 4.66  (file EV: 4.59)
+  Std deviation  : 3.26
+  Median         : 4.00
+  P(≤2 pts)      : 32.4%
+  P(≥6 pts)      : 33.4%
+  P(≥10 pts)     : 14.1%
+
+  ────────────────────────────────────
+  Head-to-head
+  ────────────────────────────────────
+  Gordon               wins: 38.7%
+  Tie                       : 12.6%
+  Rice                 wins: 48.7%
+```
+
+**Key numbers:**
+
+- **Head-to-head win %** — the core output. Accounts for the full distribution, not mean vs mean
+- **Std deviation** — higher std = more boom-or-bust. The key differentiator when EVs are similar
+- **P(≤2 pts)** — downside risk. Above ~30% is a meaningful red flag even if mean looks good
+- **P(≥6 pts) / P(≥10 pts)** — upside probability. Relevant if chasing rank
+
+The plot saves to `tmp/mc_gw{gw}_{player1}_vs_{player2}.png`. Left panel shows overlaid distributions; right panel shows the head-to-head margin histogram.
+
+## How it works
+
+For each simulation, the model draws one realisation of each scoring component independently:
+
+| Component | Model |
+|---|---|
+| Minutes | `Normal(xMins, σ=15)` clipped to [0, 90] |
+| Appearance pts | `2` if ≥60 mins, `1` if >0, `0` if 0 |
+| Goals | `Poisson(λ_goals × actual_mins / xMins)` |
+| Assists | `Poisson(λ_assists × actual_mins / xMins)` |
+| Clean sheet (GK/DEF) | `Bernoulli(p_cs)` × 6 if ≥60 mins |
+| Clean sheet (MID) | `Bernoulli(p_cs)` × 1 if >0 mins |
+| Bonus | `min(Poisson(λ_bonus), 3)` if >0 mins |
+| CBIT | `Bernoulli(cbit/100)` × 2 if >0 mins |
+| Penalty miss | `Bernoulli(p_pen) × Bernoulli(1 − pen_conv)` × −2 |
+
+---
+
+# Workflow Summary
+
+**Weekly:**
+
+1. Update projection CSV in `data/`
+2. Edit `user_settings.json` — set chips, horizon, banned/locked players
+3. **Run single solve** from repo root: `PYTHONPATH=. python run/solve.py`
+4. Read the results table — note iter 0, observe the score spread across 5 iterations
+5. **Run robustness analysis**: `python run_parallel.py` from `run/`
+6. Read PLAYER FREQUENCY — look for Strong/Very Strong SELL signals
+7. If buy side is unclear, edit `FORCED_SELLS` and `PATHS` in `compare_paths.py` and run:
+   `python compare_paths.py` from `run/`
+8. Read the HEADLINE table — use score gaps to filter dominated paths
+9. If two paths remain close (< ~1 pt), run Monte Carlo for the specific GW to compare distributions
+
+**Before a significant chip:**
+
+- Use single solve with chip GWs set to a window (e.g. `use_wc: [31, 32, 33]`) to let solver self-optimise timing
+- Or use `iteration_criteria: "chip_gws"` with `num_iterations: 5` to see the top 5 chip timing combinations ranked by score
+
+**When something isn't working:**
+
+- Player not in pool → check projection CSV; player may be missing entirely (KeyError on player ID)
+- Solve is hanging → check for zombie worker processes: `ps aux | grep spawn_main`; kill with `kill $(pgrep -f spawn_main)`
+- `run_parallel.py` is very slow → check `num_iterations` isn't set > 1 in `user_settings.json`; `run_parallel.py` overrides to `1` but only if you haven't modified that section
