@@ -21,6 +21,7 @@ The solver uses **Integer Linear Programming (ILP)** via the HiGHS solver to fin
 | Robustness analysis | `run/run_parallel.py` | Stress-testing a recommendation against projection uncertainty |
 | Path comparison | `run/compare_paths.py` | Comparing specific candidate buys head-to-head |
 | Monte Carlo simulator | `run/monte_carlo_sim.py` | Deciding between two players with similar EV |
+| Player ID lookup | `run/get_player_id.py` | Looking up a player's numeric ID from the projection CSV |
 
 **Recommended weekly workflow:**
 
@@ -315,9 +316,10 @@ FORCED_SELLS = [
 
 Leave as `[]` if you don't want to constrain the sells (solver chooses freely).
 
-To find a player's FPL ID:
+To find a player's FPL ID, use the lookup script (see [Player ID Lookup]):
 ```bash
-grep -i "playername" data/projection_all_metrics.csv | head -1
+python run/get_player_id.py Schade
+# Schade: 120
 ```
 
 ### `PATHS`
@@ -504,6 +506,42 @@ For each simulation, the model draws one realisation of each scoring component i
 | Bonus | `min(Poisson(λ_bonus), 3)` if >0 mins |
 | CBIT | `Bernoulli(cbit/100)` × 2 if >0 mins |
 | Penalty miss | `Bernoulli(p_pen) × Bernoulli(1 − pen_conv)` × −2 |
+
+---
+
+# Player ID Lookup
+
+## When to use it
+
+Any time you need a player's numeric FPL ID — e.g. to populate `FORCED_SELLS`, `PATHS`, `locked`, or `banned` in `user_settings.json` or `compare_paths.py`.
+
+## How to run
+
+From the repo root:
+
+```bash
+python run/get_player_id.py <name>
+```
+
+Search by surname (or any substring of the name as it appears in `data/projection_all_metrics.csv`):
+
+```bash
+python run/get_player_id.py Schade
+# Schade: 120
+
+python run/get_player_id.py Salah
+# M.Salah: 381
+```
+
+The search is case-insensitive and matches on any substring, so `salah`, `Salah`, and `M.Salah` all return the same result.
+
+If multiple players match, all are printed:
+
+```bash
+python run/get_player_id.py Pedro
+# Pedro Porro: 209
+# Pedro: 432
+```
 
 ---
 
