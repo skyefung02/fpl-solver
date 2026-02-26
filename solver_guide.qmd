@@ -153,15 +153,38 @@ iter  sell           buy             chip              score
 
 The single solve is optimal given the projections — but projections are uncertain. Robustness analysis runs **N solves with different random noise** applied to each player's xP. Players that appear as transfers across *most* runs are robust picks; those that appear rarely are projection-sensitive.
 
-Use it to confirm *sell* signals. The buy side is better addressed via path comparison (below), since individual buy candidates tend to scatter across many action combinations, diluting the signal.
+Use it to confirm *sell* signals. The buy side is better addressed via path comparison (below), since individual buy candidates tend to scatter across many action combinations, diluting the signal. You can also use it to stress-test a specific buy candidate by passing forced sells as CLI arguments (see below).
 
 ## How to run
 
 From the `run/` directory:
 
 ```bash
+# Unconstrained — solver free on both sells and buys
 python run_parallel.py
+
+# Force specific sells; solver freely chooses buys
+# Use PLAYER FREQUENCY BUY output to evaluate buy-side robustness
+python run_parallel.py --sell 237 256
+
+# Force a specific buy; solver freely chooses sells
+python run_parallel.py --buy 299
+
+# Force both sides; stress-test remaining free transfer slots
+python run_parallel.py --sell 237 --buy 299
 ```
+
+Player IDs are validated against your current squad before any solves run:
+
+- `--sell` IDs must be in your squad (can't sell what you don't own)
+- `--buy` IDs must not be in your squad (can't buy what you already own)
+
+The GW number is fetched automatically from the FPL API — no hardcoding required.
+
+**Typical two-step workflow:**
+
+1. `python run_parallel.py` → confirms sell signals (e.g. Enzo Very Strong, Muñoz Strong)
+2. `python run_parallel.py --sell 237 256` → sells locked in; PLAYER FREQUENCY BUY shows which buys are robust
 
 Key settings at the top of `__main__` in `run/run_parallel.py`:
 
@@ -553,12 +576,14 @@ python run/get_player_id.py Pedro
 2. Edit `user_settings.json` — set chips, horizon, banned/locked players
 3. **Run single solve** from repo root: `PYTHONPATH=. python run/solve.py`
 4. Read the results table — note iter 0, observe the score spread across 5 iterations
-5. **Run robustness analysis**: `python run_parallel.py` from `run/`
+5. **Run robustness analysis** (unconstrained): `python run_parallel.py` from `run/`
 6. Read PLAYER FREQUENCY — look for Strong/Very Strong SELL signals
-7. If buy side is unclear, edit `FORCED_SELLS` and `PATHS` in `compare_paths.py` and run:
+7. If sells are confirmed but buy side is scattered, re-run with forced sells:
+   `python run_parallel.py --sell 237 256` — PLAYER FREQUENCY BUY now shows buy-side signal
+8. If buy side is still unclear, edit `FORCED_SELLS` and `PATHS` in `compare_paths.py` and run:
    `python compare_paths.py` from `run/`
-8. Read the HEADLINE table — use score gaps to filter dominated paths
-9. If two paths remain close (< ~1 pt), run Monte Carlo for the specific GW to compare distributions
+9. Read the HEADLINE table — use score gaps to filter dominated paths
+10. If two paths remain close (< ~1 pt), run Monte Carlo for the specific GW to compare distributions
 
 **Before a significant chip:**
 

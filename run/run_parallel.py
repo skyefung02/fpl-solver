@@ -10,7 +10,9 @@
 #          __main__ block switched to randomised stress test (N=50,
 #            randomization_strength=1.2)
 
+import argparse
 import os
+import sys
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -235,6 +237,68 @@ if __name__ == "__main__":
     # False → full solver output from every subprocess is printed (messy but useful for debugging)
     SUPPRESS_SUBPROCESS_OUTPUT = True
 
+    # --- Forced sells/buys (optional, passed via command line) ---
+    # Lock specific players as transfer_out or transfer_in this GW across all runs.
+    # Forced sells: solver free to choose buys  → read BUY rows in PLAYER FREQUENCY.
+    # Forced buys:  solver free to choose sells → read SELL rows in PLAYER FREQUENCY.
+    #
+    # Usage:
+    #   python run_parallel.py                        ← unconstrained
+    #   python run_parallel.py --sell 237 256         ← force sells, free buys
+    #   python run_parallel.py --buy 299              ← force buy, free sells
+    #   python run_parallel.py --sell 237 --buy 299   ← force both sides
+    #
+    # Find a player's FPL ID:
+    #   grep -i "playername" data/projection_all_metrics.csv | head -1
+    _parser = argparse.ArgumentParser(add_help=False)
+    _parser.add_argument("--sell", nargs="*", type=int, default=[])
+    _parser.add_argument("--buy",  nargs="*", type=int, default=[])
+    _cli, _ = _parser.parse_known_args()
+    # Strip our flags from sys.argv before spawning subprocesses.
+    # solve.py uses argparse internally and inherits sys.argv from the parent —
+    # leaving --sell/--buy in place causes argparse to error in every worker.
+    sys.argv = sys.argv[:1]
+
+    forced_sell_entries = []
+    forced_buy_entries = []
+    if _cli.sell or _cli.buy:
+        _base = load_settings()
+        _next_gw = _get_next_gw(_base)
+
+        team_id = _base.get("team_id")
+        if not team_id:
+            print("[error] team_id not set in user_settings.json. Cannot validate squad.")
+            sys.exit(1)
+
+        current_gw = _next_gw - 1
+        picks_data = cached_request(
+            f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{current_gw}/picks/"
+        )
+        squad_ids = {p["element"] for p in picks_data["picks"]}
+
+        fpl_data = cached_request("https://fantasy.premierleague.com/api/bootstrap-static/")
+        name_lookup = {p["id"]: p["web_name"] for p in fpl_data["elements"]}
+
+        if _cli.sell:
+            invalid = [pid for pid in _cli.sell if pid not in squad_ids]
+            if invalid:
+                names = [f"{pid} ({name_lookup.get(pid, '?')})" for pid in invalid]
+                print(f"[error] Not in your GW{current_gw} squad: {', '.join(names)}. Aborting.")
+                sys.exit(1)
+            forced_sell_entries = [{"gw": _next_gw, "transfer_out": pid} for pid in _cli.sell]
+            sell_names = [f"{pid} ({name_lookup.get(pid, '?')})" for pid in _cli.sell]
+            print(f"[forced sells] GW{_next_gw}: {', '.join(sell_names)}")
+
+        if _cli.buy:
+            already_owned = [pid for pid in _cli.buy if pid in squad_ids]
+            if already_owned:
+                names = [f"{pid} ({name_lookup.get(pid, '?')})" for pid in already_owned]
+                print(f"[error] Already in your GW{current_gw} squad: {', '.join(names)}. Aborting.")
+                sys.exit(1)
+            forced_buy_entries = [{"gw": _next_gw, "transfer_in": pid} for pid in _cli.buy]
+            buy_names = [f"{pid} ({name_lookup.get(pid, '?')})" for pid in _cli.buy]
+            print(f"[forced buys] GW{_next_gw}: {', '.join(buy_names)}")
+
     # --- Randomized stress test ---
     # Runs N solves with different random noise applied to projections.
     # Each seed produces a different noise draw, so the solver sees slightly
@@ -242,7 +306,15 @@ if __name__ == "__main__":
     # most runs are robust picks; those that appear rarely are marginal.
     # Results are ranked by score and saved to chip_solve.csv.
     N_RUNS = 50
-    scenarios = [{"randomized": True, "randomization_seed": i, "randomization_strength": 1.2} for i in range(N_RUNS)]
+    scenarios = [
+        {
+            "randomized": True,
+            "randomization_seed": i,
+            "randomization_strength": 1.2,
+            **({"booked_transfers": forced_sell_entries + forced_buy_entries} if forced_sell_entries or forced_buy_entries else {}),
+        }
+        for i in range(N_RUNS)
+    ]
     run_parallel_solves(scenarios, suppress_output=SUPPRESS_SUBPROCESS_OUTPUT)
 
     # --- Chip comparison (commented out) ---
