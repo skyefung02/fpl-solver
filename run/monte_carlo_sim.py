@@ -16,9 +16,10 @@ Penalty handling:
   - Outcome: +goal_pts if scored, −2 if taken but missed.
 
 Usage:
-    python run/monte_carlo_sim.py --gw 28 --player1 "Gordon" --player2 "Rice"
-    python run/monte_carlo_sim.py --gw 28 --player1 "Gordon" --player2 "Rice" --n_sims 200000 --no_plot
-    python run/monte_carlo_sim.py --gw 28 --player1 "Haaland" --player2 "M.Salah" --pen_conv 0.78
+    python run/monte_carlo_sim.py --gws 28 --player1 "Gordon" --player2 "Rice"
+    python run/monte_carlo_sim.py --gws 28 29 30 --player1 "Gordon" --player2 "Rice"
+    python run/monte_carlo_sim.py --gws 28 29 --player1 "Haaland" --player2 "M.Salah" --pen_conv 0.78
+    python run/monte_carlo_sim.py --gws 28 --player1 "Gordon" --player2 "Rice" --n_sims 200000 --no_plot
 """
 
 import argparse
@@ -37,7 +38,7 @@ from paths import DATA_DIR  # noqa: E402
 
 # ── FPL scoring rules ──────────────────────────────────────────────────────────
 GOAL_PTS          = {"G": 6, "D": 6, "M": 5, "F": 4}
-CS_PTS            = {"G": 6, "D": 6, "M": 1, "F": 0}
+CS_PTS            = {"G": 4, "D": 4, "M": 1, "F": 0}
 ASSIST_PTS        = 3
 CBIT_PTS          = 2       # 2-point bonus for exceeding CBIT threshold
 PENALTY_MISS_PTS  = -2      # points deducted for a missed penalty
@@ -167,59 +168,102 @@ def simulate(player: dict, n: int, rng: np.random.Generator) -> np.ndarray:
     ).astype(float)
 
 
-def print_stats(player: dict, pts: np.ndarray) -> None:
-    name   = player["name"]
-    ev     = player["ev"]
-    thresholds = [2, 6, 10, 15]
+# ── Printing ───────────────────────────────────────────────────────────────────
 
+def print_results(
+    name1: str, pos1: str, ev_sum1: float, pts1_per_gw: list,
+    name2: str, pos2: str, ev_sum2: float, pts2_per_gw: list,
+    gws: list,
+    n_sims: int,
+    seed: int,
+) -> None:
+    n_gws    = len(gws)
+    gw_label = f"GW{gws[0]}" if n_gws == 1 else f"GW{gws[0]}–{gws[-1]}"
+    cum1     = sum(pts1_per_gw)
+    cum2     = sum(pts2_per_gw)
+
+    print(f"\n{'═'*42}")
+    print(f"  Monte Carlo Simulation — {gw_label}")
+    print(f"  {n_sims:,} iterations  |  seed={seed}")
+    print(f"{'═'*42}")
+
+    # Per-GW mean table (multi-GW only)
+    if n_gws > 1:
+        print(f"\n  Per-gameweek simulated means")
+        print(f"  {'GW':<6}  {name1:<18}  {name2}")
+        print(f"  {'─'*42}")
+        for gw, pts1, pts2 in zip(gws, pts1_per_gw, pts2_per_gw):
+            print(f"  {gw:<6}  {pts1.mean():<18.2f}  {pts2.mean():.2f}")
+
+    # Per-player cumulative stats
+    thresholds_le = [2] if n_gws == 1 else []
+    thresholds_ge = [6, 10, 15] if n_gws == 1 else [10, 20, 30, 40]
+
+    for name, pos, ev_sum, cum in [
+        (name1, pos1, ev_sum1, cum1),
+        (name2, pos2, ev_sum2, cum2),
+    ]:
+        label_suffix = "" if n_gws == 1 else "  — cumulative"
+        print(f"\n  {'─'*36}")
+        print(f"  {name}  ({pos}){label_suffix}")
+        print(f"  {'─'*36}")
+        print(f"  Simulated mean : {cum.mean():.2f}  (file EV: {ev_sum:.2f})")
+        print(f"  Std deviation  : {cum.std():.2f}")
+        print(f"  Median         : {np.median(cum):.0f}")
+        for t in thresholds_le:
+            print(f"  {'P(≤'+str(t)+' pts)':<16}: {(cum <= t).mean()*100:.1f}%")
+        for t in thresholds_ge:
+            print(f"  {'P(≥'+str(t)+' pts)':<16}: {(cum >= t).mean()*100:.1f}%")
+        print(f"  90th pctile    : {np.percentile(cum, 90):.0f}")
+        print(f"  95th pctile    : {np.percentile(cum, 95):.0f}")
+
+    # Head-to-head summary
+    diff = cum1 - cum2
     print(f"\n  {'─'*36}")
-    print(f"  {name}  ({player['pos']})")
+    print(f"  Head-to-head  ({gw_label})")
     print(f"  {'─'*36}")
-    print(f"  Simulated mean : {pts.mean():.2f}  (file EV: {ev:.2f})")
-    print(f"  Std deviation  : {pts.std():.2f}")
-    print(f"  Median         : {np.median(pts):.0f}")
-    for t in thresholds:
-        label = f"P(≤{t} pts)" if t == 2 else f"P(≥{t} pts)"
-        pct   = (pts <= t).mean() * 100 if t == 2 else (pts >= t).mean() * 100
-        print(f"  {label:<16}: {pct:.1f}%")
-    print(f"  90th pctile    : {np.percentile(pts, 90):.0f}")
-    print(f"  95th pctile    : {np.percentile(pts, 95):.0f}")
+    print(f"  {name1:<20} wins: {(diff > 0).mean()*100:.1f}%")
+    print(f"  {'Tie':<20}      : {(diff == 0).mean()*100:.1f}%")
+    print(f"  {name2:<20} wins: {(diff < 0).mean()*100:.1f}%")
 
 
+# ── Plotting helpers ───────────────────────────────────────────────────────────
 
-def plot_comparison(
-    p1: dict, pts1: np.ndarray,
-    p2: dict, pts2: np.ndarray,
-    gw: int,
-) -> Path:
-    fig = plt.figure(figsize=(14, 5))
-    gs  = gridspec.GridSpec(1, 2, figure=fig, wspace=0.3)
-
-    # ── Left: overlaid distributions ────────────────────────────────────────
-    ax1  = fig.add_subplot(gs[0, 0])
+def _plot_overlay(
+    ax,
+    name1: str, name2: str,
+    pts1: np.ndarray, pts2: np.ndarray,
+    title: str,
+    show_legend: bool = True,
+) -> None:
+    """Overlaid points distribution for two players."""
     mmax = int(max(pts1.max(), pts2.max()))
-    bins = np.arange(-0.5, min(mmax + 1.5, 32), 1)
+    bins = np.arange(-0.5, min(mmax + 1.5, 120), 1)
 
-    ax1.hist(pts1, bins=bins, density=True, alpha=0.6, color="C0", label=p1["name"])
-    ax1.hist(pts2, bins=bins, density=True, alpha=0.6, color="C1", label=p2["name"])
-    ax1.axvline(pts1.mean(), color="C0", linestyle="--", lw=1.5,
-                label=f"{p1['name']} μ = {pts1.mean():.2f}")
-    ax1.axvline(pts2.mean(), color="C1", linestyle="--", lw=1.5,
-                label=f"{p2['name']} μ = {pts2.mean():.2f}")
-    ax1.set_xlabel("FPL Points", fontsize=11)
-    ax1.set_ylabel("Probability", fontsize=11)
-    ax1.set_title(f"GW{gw} Points Distribution  (n = {len(pts1):,})")
-    ax1.legend(fontsize=9)
+    ax.hist(pts1, bins=bins, density=True, alpha=0.6, color="C0", label=name1)
+    ax.hist(pts2, bins=bins, density=True, alpha=0.6, color="C1", label=name2)
+    ax.axvline(pts1.mean(), color="C0", linestyle="--", lw=1.5,
+               label=f"{name1} μ={pts1.mean():.1f}")
+    ax.axvline(pts2.mean(), color="C1", linestyle="--", lw=1.5,
+               label=f"{name2} μ={pts2.mean():.1f}")
+    ax.set_xlabel("FPL Points", fontsize=10)
+    ax.set_ylabel("Probability", fontsize=10)
+    ax.set_title(title, fontsize=10)
+    if show_legend:
+        ax.legend(fontsize=8)
 
-    # ── Right: differential (colour-coded by winner) ─────────────────────────
-    ax2       = fig.add_subplot(gs[0, 1])
-    diff      = pts1 - pts2
+
+def _plot_diff(
+    ax,
+    name1: str, name2: str,
+    diff: np.ndarray,
+    title: str,
+) -> None:
+    """Head-to-head differential histogram."""
     dmax      = int(max(abs(diff.min()), abs(diff.max()))) + 1
     diff_bins = np.arange(-dmax - 0.5, dmax + 1.5, 1)
 
-    _, _, patches = ax2.hist(diff, bins=diff_bins, density=True, alpha=0.85, color="grey")
-
-    # Colour each bar: p1-wins side → C0, p2-wins side → C1, tie bar → grey
+    _, _, patches = ax.hist(diff, bins=diff_bins, density=True, alpha=0.85, color="grey")
     for patch in patches:
         x_mid = patch.get_x() + patch.get_width() / 2
         if x_mid > 0:
@@ -227,42 +271,181 @@ def plot_comparison(
         elif x_mid < 0:
             patch.set_facecolor("C1")
 
-    ax2.axvline(0, color="black", lw=1.2, alpha=0.5)
+    ax.axvline(0, color="black", lw=1.2, alpha=0.5)
 
     pct1  = (diff > 0).mean() * 100
     pct2  = (diff < 0).mean() * 100
     pct_t = (diff == 0).mean() * 100
 
-    # Annotate win % directly on the relevant side
-    ax2.text(0.98, 0.97, f"{p1['name']}\noutscores\n{pct1:.1f}%",
-             transform=ax2.transAxes, va="top", ha="right",
-             fontsize=10, fontweight="bold", color="C0")
-    ax2.text(0.02, 0.97, f"{p2['name']}\noutscores\n{pct2:.1f}%",
-             transform=ax2.transAxes, va="top", ha="left",
-             fontsize=10, fontweight="bold", color="C1")
+    ax.text(0.98, 0.97, f"{name1}\noutscores\n{pct1:.1f}%",
+            transform=ax.transAxes, va="top", ha="right",
+            fontsize=9, fontweight="bold", color="C0")
+    ax.text(0.02, 0.97, f"{name2}\noutscores\n{pct2:.1f}%",
+            transform=ax.transAxes, va="top", ha="left",
+            fontsize=9, fontweight="bold", color="C1")
 
-    ax2.set_xlabel(f"Points margin  ({p1['name']} − {p2['name']})", fontsize=11)
-    ax2.set_ylabel("Probability", fontsize=11)
-    ax2.set_title(f"Head-to-head margin  (tie: {pct_t:.1f}%)")
+    ax.set_xlabel(f"Points margin  ({name1} − {name2})", fontsize=10)
+    ax.set_ylabel("Probability", fontsize=10)
+    ax.set_title(f"{title}  (tie: {pct_t:.1f}%)", fontsize=10)
 
-    out_path = ROOT / "tmp" / f"mc_gw{gw}_{p1['name']}_vs_{p2['name']}.png"
+
+# ── Stats text panel ──────────────────────────────────────────────────────────
+
+def _plot_stats(
+    ax,
+    name1: str, pos1: str, ev_sum1: float, cum1: np.ndarray,
+    name2: str, pos2: str, ev_sum2: float, cum2: np.ndarray,
+    gws: list,
+) -> None:
+    """Render summary statistics as a text panel (axes hidden)."""
+    ax.axis("off")
+    n_gws = len(gws)
+    diff  = cum1 - cum2
+
+    thresholds_le = [2] if n_gws == 1 else []
+    thresholds_ge = [6, 10, 15] if n_gws == 1 else [10, 20, 30, 40]
+
+    def _lines(name, pos, ev_sum, cum):
+        rows = [
+            f"{name} ({pos})",
+            "─" * 22,
+            f"Mean : {cum.mean():.2f}  (EV {ev_sum:.2f})",
+            f"Std  : {cum.std():.2f}",
+            f"Med  : {np.median(cum):.0f}",
+        ]
+        for t in thresholds_le:
+            rows.append(f"P(≤{t} pts) : {(cum <= t).mean()*100:.1f}%")
+        for t in thresholds_ge:
+            rows.append(f"P(≥{t} pts) : {(cum >= t).mean()*100:.1f}%")
+        rows.append(f"p90  : {np.percentile(cum, 90):.0f}")
+        rows.append(f"p95  : {np.percentile(cum, 95):.0f}")
+        return "\n".join(rows)
+
+    ax.text(0.02, 0.97, _lines(name1, pos1, ev_sum1, cum1),
+            transform=ax.transAxes, va="top", ha="left",
+            fontsize=8.5, fontfamily="monospace", color="C0")
+    ax.text(0.52, 0.97, _lines(name2, pos2, ev_sum2, cum2),
+            transform=ax.transAxes, va="top", ha="left",
+            fontsize=8.5, fontfamily="monospace", color="C1")
+
+    gw_label = f"GW{gws[0]}" if n_gws == 1 else f"GW{gws[0]}–{gws[-1]}"
+    pct1  = (diff > 0).mean() * 100
+    pct2  = (diff < 0).mean() * 100
+    pct_t = (diff == 0).mean() * 100
+    h2h = (
+        f"Head-to-head ({gw_label})\n"
+        f"{'─' * 24}\n"
+        f"{name1 + ' wins':<20} {pct1:.1f}%\n"
+        f"{'Tie':<20} {pct_t:.1f}%\n"
+        f"{name2 + ' wins':<20} {pct2:.1f}%"
+    )
+    ax.text(0.02, 0.28, h2h,
+            transform=ax.transAxes, va="top", ha="left",
+            fontsize=8.5, fontfamily="monospace", color="black")
+
+    ax.set_title("Summary Statistics", fontsize=10)
+
+
+# ── Main plot dispatcher ───────────────────────────────────────────────────────
+
+def plot_comparison(
+    name1: str, pos1: str, ev_sum1: float,
+    name2: str, pos2: str, ev_sum2: float,
+    pts1_per_gw: list,
+    pts2_per_gw: list,
+    gws: list,
+    n_sims: int,
+) -> Path:
+    """
+    Single GW  → 3-panel layout   (overlay | diff | stats).
+    Multi-GW   → Option B two-row layout:
+                   Row 1: per-GW overlaid distributions
+                   Row 2: cumulative overlay | cumulative diff | stats
+    """
+    n_gws = len(gws)
+    cum1  = sum(pts1_per_gw)
+    cum2  = sum(pts2_per_gw)
+
+    if n_gws == 1:
+        # ── Single GW: 3-panel layout ─────────────────────────────────────────
+        fig = plt.figure(figsize=(19, 5))
+        gs  = gridspec.GridSpec(1, 3, figure=fig, wspace=0.35,
+                                width_ratios=[2, 2, 1.5])
+
+        _plot_overlay(fig.add_subplot(gs[0, 0]), name1, name2,
+                      pts1_per_gw[0], pts2_per_gw[0],
+                      f"GW{gws[0]} Points Distribution  (n={n_sims:,})")
+        _plot_diff(fig.add_subplot(gs[0, 1]), name1, name2,
+                   cum1 - cum2, f"Head-to-head margin  GW{gws[0]}")
+        _plot_stats(fig.add_subplot(gs[0, 2]),
+                    name1, pos1, ev_sum1, cum1,
+                    name2, pos2, ev_sum2, cum2, gws)
+
+    else:
+        # ── Multi-GW: Option B two-row layout ────────────────────────────────
+        fig_w    = max(14, 4.5 * n_gws)
+        fig      = plt.figure(figsize=(fig_w, 10))
+        gw_range = f"GW{gws[0]}–{gws[-1]}"
+
+        # Row 1 — one overlay panel per GW
+        gs_top = gridspec.GridSpec(
+            1, n_gws, figure=fig,
+            left=0.05, right=0.98, top=0.91, bottom=0.55,
+            wspace=0.35,
+        )
+        for i, (gw, pts1, pts2) in enumerate(zip(gws, pts1_per_gw, pts2_per_gw)):
+            _plot_overlay(
+                fig.add_subplot(gs_top[0, i]),
+                name1, name2, pts1, pts2,
+                f"GW{gw}  (n={n_sims:,})",
+                show_legend=(i == 0),
+            )
+
+        # Row 2 — cumulative overlay | cumulative diff | stats
+        gs_bot = gridspec.GridSpec(
+            1, 3, figure=fig,
+            left=0.05, right=0.98, top=0.43, bottom=0.08,
+            wspace=0.35, width_ratios=[2, 2, 1.5],
+        )
+        _plot_overlay(fig.add_subplot(gs_bot[0, 0]), name1, name2,
+                      cum1, cum2,
+                      f"Cumulative {gw_range}  (n={n_sims:,})")
+        _plot_diff(fig.add_subplot(gs_bot[0, 1]), name1, name2,
+                   cum1 - cum2, f"Cumulative head-to-head  {gw_range}")
+        _plot_stats(fig.add_subplot(gs_bot[0, 2]),
+                    name1, pos1, ev_sum1, cum1,
+                    name2, pos2, ev_sum2, cum2, gws)
+
+        fig.suptitle(f"{name1}  vs  {name2}  —  {gw_range}",
+                     fontsize=13, fontweight="bold", y=0.97)
+
+    gw_tag   = f"gw{gws[0]}" if n_gws == 1 else f"gw{gws[0]}-{gws[-1]}"
+    out_path = ROOT / "tmp" / f"mc_{gw_tag}_{name1}_vs_{name2}.png"
     out_path.parent.mkdir(exist_ok=True)
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.show()
     return out_path
 
 
+# ── Entry point ────────────────────────────────────────────────────────────────
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Monte Carlo FPL player comparison",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--gw",      type=int, required=True,   help="Gameweek number")
-    parser.add_argument("--player1", type=str, required=True,   help="First player name (exact match)")
-    parser.add_argument("--player2", type=str, required=True,   help="Second player name (exact match)")
-    parser.add_argument("--n_sims",  type=int, default=100_000, help="Number of simulations")
-    parser.add_argument("--seed",    type=int, default=42,      help="RNG seed for reproducibility")
-    parser.add_argument("--no_plot",  action="store_true",        help="Suppress the matplotlib plot")
+    parser.add_argument("--gws",     type=int, nargs="+", required=True,
+                        help="Gameweek number(s), e.g. --gws 28  or  --gws 28 29 30")
+    parser.add_argument("--player1", type=str, required=True,
+                        help="First player name (exact match)")
+    parser.add_argument("--player2", type=str, required=True,
+                        help="Second player name (exact match)")
+    parser.add_argument("--n_sims",  type=int, default=250_000,
+                        help="Number of simulations")
+    parser.add_argument("--seed",    type=int, default=42,
+                        help="RNG seed for reproducibility")
+    parser.add_argument("--no_plot", action="store_true",
+                        help="Suppress the matplotlib plot")
     parser.add_argument("--pen_conv", type=float, default=DEFAULT_PEN_CONV,
                         help="Penalty conversion rate (default: PL average 0.76)")
     args = parser.parse_args()
@@ -270,31 +453,36 @@ def main() -> None:
     proj = pd.read_csv(DATA_DIR / "projection_all_metrics.csv")
     pen  = pd.read_csv(DATA_DIR / "penalties.csv")
 
-    p1 = load_player_data(proj, pen, args.player1, args.gw, args.pen_conv)
-    p2 = load_player_data(proj, pen, args.player2, args.gw, args.pen_conv)
+    rng = np.random.default_rng(args.seed)
 
-    rng  = np.random.default_rng(args.seed)
-    pts1 = simulate(p1, args.n_sims, rng)
-    pts2 = simulate(p2, args.n_sims, rng)
+    pts1_per_gw: list[np.ndarray] = []
+    pts2_per_gw: list[np.ndarray] = []
+    ev_sum1 = ev_sum2 = 0.0
+    pos1 = pos2 = ""
 
-    print(f"\n{'═'*42}")
-    print(f"  Monte Carlo Simulation — GW{args.gw}")
-    print(f"  {args.n_sims:,} iterations  |  seed={args.seed}")
-    print(f"{'═'*42}")
+    for gw in args.gws:
+        p1 = load_player_data(proj, pen, args.player1, gw, args.pen_conv)
+        p2 = load_player_data(proj, pen, args.player2, gw, args.pen_conv)
+        pts1_per_gw.append(simulate(p1, args.n_sims, rng))
+        pts2_per_gw.append(simulate(p2, args.n_sims, rng))
+        ev_sum1 += p1["ev"]
+        ev_sum2 += p2["ev"]
+        pos1 = p1["pos"]
+        pos2 = p2["pos"]
 
-    print_stats(p1, pts1)
-    print_stats(p2, pts2)
-
-    diff = pts1 - pts2
-    print(f"\n  {'─'*36}")
-    print(f"  Head-to-head")
-    print(f"  {'─'*36}")
-    print(f"  {p1['name']:<20} wins: {(diff > 0).mean()*100:.1f}%")
-    print(f"  {'Tie':<20}      : {(diff == 0).mean()*100:.1f}%")
-    print(f"  {p2['name']:<20} wins: {(diff < 0).mean()*100:.1f}%")
+    print_results(
+        args.player1, pos1, ev_sum1, pts1_per_gw,
+        args.player2, pos2, ev_sum2, pts2_per_gw,
+        args.gws, args.n_sims, args.seed,
+    )
 
     if not args.no_plot:
-        out = plot_comparison(p1, pts1, p2, pts2, args.gw)
+        out = plot_comparison(
+            args.player1, pos1, ev_sum1,
+            args.player2, pos2, ev_sum2,
+            pts1_per_gw, pts2_per_gw,
+            args.gws, args.n_sims,
+        )
         print(f"\n  Plot saved → {out}")
 
 
