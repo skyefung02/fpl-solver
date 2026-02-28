@@ -1,8 +1,10 @@
 # Written by Skye Fung, 2025
-# Deterministic path comparison tool.
-# Runs one solve per defined path, each with num_iterations alternatives.
-# Results are displayed grouped by path with a headline summary for quick comparison.
-# Runs paths in parallel (one process per path); iterations within each path are sequential.
+# Path comparison tool with optional matched-seed robustness analysis.
+# Deterministic mode: one solve per path, results grouped by path with headline summary.
+# Robustness mode (N_RUNS > 0): N matched-seed randomised solves per path; paths are
+#   compared by win rate — how often each path scores highest under the same noise draw.
+#   Using matched seeds controls for draw difficulty, isolating the effect of the locked player.
+# All paths run in parallel (one process per job); seeds are independent across processes.
 
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -36,8 +38,6 @@ SOLVER_OPTIONS = {
 # Find a player's FPL ID by searching your projection CSV:
 #   grep -i "playername" data/projection_all_metrics.csv | head -1
 FORCED_SELLS = [
-    237,   # Enzo
-    256,   # Muñoz
 ]
 
 # Paths to compare. Each entry is a dict with:
@@ -45,9 +45,6 @@ FORCED_SELLS = [
 #   "locked_next_gw" — list of player IDs forced into squad this GW (optional)
 #   Any other solver option to override for this specific path only.
 PATHS = [
-    {
-        "name": "Free",
-    },
     {
         "name": "Ndiaye",
         "locked_next_gw": [299],
@@ -65,8 +62,12 @@ PATHS = [
         "locked_next_gw": [83],
     },
     {
-        "name": "Wirtz",
-        "locked_next_gw": [382],
+        "name": "Szoboszlai",
+        "locked_next_gw": [387],
+    },
+    {
+        "name": "Gakpo",
+        "locked_next_gw": [384],
     },
     
     # Add more paths below:
@@ -79,6 +80,15 @@ PATHS = [
 # True  → subprocess output hidden, only progress bar shown (recommended)
 # False → full solver output printed per path (useful for debugging)
 SUPPRESS_OUTPUT = True
+
+# N_RUNS controls which mode runs:
+#   N_RUNS = 1  → deterministic path comparison (one solve per path, base projections)
+#   N_RUNS > 1  → matched-seed robustness analysis (N randomised solves per path)
+#                 Each path shares the same seeds, so draw difficulty is identical —
+#                 win rate (how often a path scores highest) is the ranking metric.
+#                 Robustness solves use horizon=6 and gap=0.002 for speed.
+N_RUNS = 30
+RANDOMIZATION_STRENGTH = 1
 
 # ─── END USER CONFIGURATION ───────────────────────────────────────────────────
 
@@ -107,6 +117,50 @@ def _get_next_gw():
         if event["is_next"]:
             return event["id"]
     return None
+
+
+def _filter_chips_to_horizon(settings, horizon, next_gw):
+    """Drop chip GWs that fall outside [next_gw, next_gw + horizon - 1].
+
+    Mirrors the same function in run_parallel.py — needed whenever the robustness
+    solves use a shorter horizon than user_settings.json may have assumed.
+    """
+    if next_gw is None:
+        return {}
+    last_gw = next_gw + horizon - 1
+    overrides = {}
+    dropped = []
+    for chip in ["use_wc", "use_bb", "use_fh", "use_tc"]:
+        gws_for_chip = settings.get(chip, [])
+        in_horizon = [gw for gw in gws_for_chip if next_gw <= gw <= last_gw]
+        out_of_horizon = [gw for gw in gws_for_chip if gw < next_gw or gw > last_gw]
+        if out_of_horizon:
+            dropped.append(f"{chip[4:].upper()} GW{out_of_horizon}")
+        overrides[chip] = in_horizon
+    if dropped:
+        print(f"[chip filter] Dropped chip(s) outside horizon (GW{next_gw}–GW{last_gw}): {', '.join(dropped)}")
+    return overrides
+
+
+def _signal_strength(p, n):
+    """Classify win-rate signal using the lower bound of the 95% confidence interval.
+
+    A signal is 'Noise' if its CI lower bound touches zero — i.e. the observed
+    win rate is statistically indistinguishable from zero at N runs.
+    """
+    if p == 0:
+        return "—"
+    lower = p - 1.96 * (p * (1 - p) / n) ** 0.5
+    if lower <= 0:
+        return "Noise"
+    elif lower < 0.10:
+        return "Weak"
+    elif lower < 0.20:
+        return "Moderate"
+    elif lower < 0.35:
+        return "Strong"
+    else:
+        return "Very Strong"
 
 
 def _print_path_comparison(path_results, next_gw):
@@ -212,5 +266,140 @@ def run_path_comparison(paths, solver_options, forced_sells=None, suppress_outpu
     print(f"Full results saved to {out_path}")
 
 
+def run_robustness_comparison(paths, solver_options, n_runs, randomization_strength, forced_sells=None, suppress_output=True):
+    """Run matched-seed robustness comparison across paths.
+
+    For each of n_runs seeds, all paths are solved with identical noise draws.
+    The primary metric is win rate: how often each path achieves the highest
+    score across all paths for a given seed. Using matched seeds controls for
+    draw difficulty — a hard draw hurts all paths equally, so the winner is
+    determined solely by the relative advantage of each locked player.
+
+    Robustness solves use horizon=6 and gap=0.002 for speed. Results are saved
+    to path_robustness.csv.
+
+    Args:
+        paths: list of path dicts (see USER CONFIGURATION)
+        solver_options: base options applied to every solve
+        n_runs: number of seeds (total solves = n_runs × len(paths))
+        randomization_strength: noise scale passed to the solver
+        forced_sells: list of player IDs to force as transfer_out this GW
+        suppress_output: if True, suppress HiGHS stdout from subprocesses
+    """
+    worker_fn = _solve_silent if suppress_output else solve_regular
+    next_gw = _get_next_gw()
+    gw_label = f"GW{next_gw}" if next_gw else "GW?"
+
+    forced_sell_entries = []
+    if forced_sells and next_gw:
+        forced_sell_entries = [{"gw": next_gw, "transfer_out": pid} for pid in forced_sells]
+
+    # Robustness-specific options: shorter horizon and relaxed gap for speed.
+    # Apply chip filter so chips set beyond horizon=6 don't cause empty-group warnings.
+    _horizon = 6
+    base_settings = load_settings()
+    chip_overrides = _filter_chips_to_horizon(base_settings, _horizon, next_gw)
+    robustness_opts = {
+        **solver_options,
+        **chip_overrides,
+        "horizon": _horizon,
+        "gap": 0.002,
+        "randomized": True,
+        "randomization_strength": randomization_strength,
+    }
+
+    # Build one job per (seed, path) combination.
+    path_names = [p.get("name", "Unnamed") for p in paths]
+    jobs = []  # list of (name, seed, args)
+    for seed in range(n_runs):
+        for path in paths:
+            name = path.get("name", "Unnamed")
+            path_overrides = {k: v for k, v in path.items() if k != "name"}
+            merged = {**robustness_opts, **path_overrides, "randomization_seed": seed}
+            if forced_sell_entries:
+                existing = merged.get("booked_transfers", [])
+                merged["booked_transfers"] = existing + forced_sell_entries
+            jobs.append((name, seed, merged))
+
+    # Run all jobs in parallel.
+    max_workers = max(1, os.cpu_count() - 2)
+    results = {}  # (name, seed) -> score
+
+    total = len(jobs)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(worker_fn, args): (name, seed)
+            for name, seed, args in jobs
+        }
+        for future in tqdm(as_completed(futures), total=total, desc="Robustness", unit="solve"):
+            name, seed = futures[future]
+            df = future.result().reset_index(drop=True)
+            results[(name, seed)] = df.iloc[0]["score"]
+
+    # For each seed, award a win to the highest-scoring path.
+    # Ties split the win fractionally so total wins always sum to n_runs.
+    win_counts = {name: 0.0 for name in path_names}
+    for seed in range(n_runs):
+        seed_scores = {name: results[(name, seed)] for name in path_names}
+        best_score = max(seed_scores.values())
+        winners = [name for name, score in seed_scores.items() if score == best_score]
+        for winner in winners:
+            win_counts[winner] += 1.0 / len(winners)
+
+    # Compute per-path score statistics across all seeds.
+    path_stats = {}
+    for name in path_names:
+        scores = sorted(results[(name, seed)] for seed in range(n_runs))
+        path_stats[name] = {
+            "wins": win_counts[name],
+            "median": scores[len(scores) // 2],
+            "min": scores[0],
+            "max": scores[-1],
+        }
+
+    # Print summary table.
+    print(f"\n{'=' * 70}")
+    print(f"  Robustness Comparison — {gw_label}, N={n_runs} seeds, horizon=6")
+    print(f"{'=' * 70}")
+    print(f"  Win rate: fraction of seeds where this path scores highest.")
+    print(f"  All paths share the same seeds — draw difficulty is controlled.")
+
+    rows = []
+    for name in path_names:
+        s = path_stats[name]
+        wins = s["wins"]
+        p = wins / n_runs
+        rows.append([
+            name,
+            f"{wins:.0f}",
+            f"{100 * p:.0f}%",
+            f"{s['median']:.1f}",
+            f"{s['min']:.1f}",
+            f"{s['max']:.1f}",
+            _signal_strength(p, n_runs),
+        ])
+    rows.sort(key=lambda x: -float(x[1]))
+
+    print()
+    print(tabulate(rows, headers=["Path", "Wins", "Win%", "Median", "Min", "Max", "Signal"], tablefmt="simple"))
+    print()
+
+    # Save per-seed scores to CSV.
+    rob_rows = [
+        {"path": name, "seed": seed, "score": results[(name, seed)]}
+        for name in path_names
+        for seed in range(n_runs)
+    ]
+    out_path = "path_robustness.csv"
+    pd.DataFrame(rob_rows).to_csv(out_path, index=False, encoding="utf-8")
+    print(f"Robustness results saved to {out_path}")
+
+
 if __name__ == "__main__":
-    run_path_comparison(PATHS, SOLVER_OPTIONS, forced_sells=FORCED_SELLS, suppress_output=SUPPRESS_OUTPUT)
+    if N_RUNS <= 1:
+        run_path_comparison(PATHS, SOLVER_OPTIONS, forced_sells=FORCED_SELLS, suppress_output=SUPPRESS_OUTPUT)
+    else:
+        run_robustness_comparison(
+            PATHS, SOLVER_OPTIONS, N_RUNS, RANDOMIZATION_STRENGTH,
+            forced_sells=FORCED_SELLS, suppress_output=SUPPRESS_OUTPUT,
+        )

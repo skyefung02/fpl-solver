@@ -23,6 +23,7 @@ Usage:
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -44,6 +45,11 @@ CBIT_PTS          = 2       # 2-point bonus for exceeding CBIT threshold
 PENALTY_MISS_PTS  = -2      # points deducted for a missed penalty
 MINS_FULL         = 60      # minutes threshold for full appearance bonus
 DEFAULT_PEN_CONV  = 0.76    # Premier League average penalty conversion rate
+SAVES_PER_SAVE_PT = 3       # saves threshold per +1 save point
+SAVES_SLOPE       = 0.7891  # OLS: λ_saves = SAVES_SLOPE × λ_gc + SAVES_INTERCEPT
+SAVES_INTERCEPT   = 1.0066  # recalibrated after separating out penalty-save EV
+SAVES_FALLBACK    = 2.10    # λ_saves fallback for DGW / no fixture data
+PEN_SAVE_PTS      = 5       # points for a GK penalty save
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -53,6 +59,8 @@ def load_player_data(
     name: str,
     gw: int,
     pen_conv: float,
+    fix: pd.DataFrame | None = None,
+    team: str | None = None,
 ) -> dict:
     """Extract per-GW projection and penalty stats for a named player.
 
@@ -65,10 +73,30 @@ def load_player_data(
     (already reflecting Solio's own penalty contribution).  The penalties.csv
     data is used only to model the penalty miss risk (−2 pts), which is NOT
     captured in the 28_Pts projection.
+
+    GC model (GK/DEF, single GWs only):
+      When fix (fixture_difficulty_all_metrics.csv) is provided, the team's
+      projected goals conceded (λ_gc) is stored so that simulate() can draw
+      GC ~ Poisson(λ_gc) and use that single draw to resolve both the clean
+      sheet bonus and the −1 pt / 2 goals conceded deduction consistently.
+      Double gameweeks are detected via xMins > 95 and fall back to the
+      independent Bernoulli CS draw (no GC deduction), since the aggregated
+      λ_gc across two fixtures cannot be applied to a single Poisson draw.
     """
     proj_matches = proj[proj["Name"] == name]
     if proj_matches.empty:
         raise ValueError(f"Player '{name}' not found. Check spelling / capitalisation.")
+    if team is not None:
+        team_matches = proj_matches[proj_matches["Team"] == team]
+        if team_matches.empty:
+            raise ValueError(f"Player '{name}' not found for team '{team}'.")
+        proj_matches = team_matches
+    elif len(proj_matches) > 1:
+        teams = proj_matches["Team"].tolist()
+        raise ValueError(
+            f"Multiple players named '{name}' found (teams: {teams}). "
+            "Specify team= to disambiguate."
+        )
     row = proj_matches.iloc[0]
     g   = str(gw)
 
@@ -76,18 +104,61 @@ def load_player_data(
     pen_matches = pen[pen["Name"] == name]
     p_pen = float(pen_matches.iloc[0][f"{g}_penalties"]) if not pen_matches.empty else 0.0
 
+    xmins = float(row[f"{g}_xMins"])
+    pos   = row["Pos"]
+
+    # GC rate — for GK/DEF/MID in single GWs when fixture data is available
+    # (FWD excluded: CS_PTS["F"] = 0 and no GC deduction applies)
+    gc_rate: float | None = None
+    if fix is not None and pos in ("G", "D", "M") and xmins <= 95:
+        fix_row = fix[fix["Team"] == row["Team"]]
+        if not fix_row.empty:
+            rate = float(fix_row.iloc[0][f"{g}_GC"])
+            if rate > 0:
+                gc_rate = rate
+
+    # Save-point rate — GK only.
+    # Single GW with fixture data: λ_saves derived from λ_gc via empirical OLS fit
+    #   (r=0.82, n=168 starting-GK single-GW observations).
+    # DGW or no fixture data: fall back to league-average λ_saves.
+    lam_saves: float = 0.0
+    if pos == "G":
+        if gc_rate is not None:
+            lam_saves = max(0.0, SAVES_SLOPE * gc_rate + SAVES_INTERCEPT)
+        else:
+            lam_saves = SAVES_FALLBACK
+
+    # Opponent penalty probability — GK only, SGW only.
+    # Sum all opponent players' P(takes a penalty) for this GW.  Because penalty
+    # takers within a team are mutually exclusive, this sum equals P(opponent team
+    # takes at least one penalty this GW), i.e. P(GK faces a penalty).
+    # Only computed for SGWs (xmins <= 95) where the opponent is unambiguous.
+    p_pen_opp: float = 0.0
+    if pos == "G" and fix is not None and xmins <= 95:
+        fix_gk_row = fix[fix["Team"] == row["Team"]]
+        if not fix_gk_row.empty:
+            opp_raw  = str(fix_gk_row.iloc[0][f"{g}_OPP"])
+            opp_abbr = re.sub(r"\([AH]\)", "", opp_raw).strip()
+            opp_name_match = fix[fix["Abbr"] == opp_abbr]["Team"]
+            if not opp_name_match.empty:
+                opp_team  = opp_name_match.iloc[0]
+                p_pen_opp = float(pen[pen["Team"] == opp_team][f"{g}_penalties"].sum())
+
     return {
-        "name":     name,
-        "pos":      row["Pos"],
-        "xmins":    float(row[f"{g}_xMins"]),
-        "ev":       float(row[f"{g}_Pts"]),
-        "goals":    float(row[f"{g}_goals"]),  # total goals, pen contribution embedded
-        "p_pen":    p_pen,                     # P(takes a penalty this GW)
-        "pen_conv": pen_conv,                  # conversion rate, used only for miss risk
-        "assists":  float(row[f"{g}_assists"]),
-        "cs":       float(row[f"{g}_CS"]),
-        "bonus":    float(row[f"{g}_bonus"]),
-        "cbit":     float(row[f"{g}_cbit"]) / 100.0,
+        "name":      name,
+        "pos":       pos,
+        "xmins":     xmins,
+        "ev":        float(row[f"{g}_Pts"]),
+        "goals":     float(row[f"{g}_goals"]),  # total goals, pen contribution embedded
+        "p_pen":     p_pen,                     # P(takes a penalty this GW)
+        "pen_conv":  pen_conv,                  # conversion rate, used only for miss risk
+        "assists":   float(row[f"{g}_assists"]),
+        "cs":        float(row[f"{g}_CS"]),     # fallback only (DGW / no fixture data)
+        "bonus":     float(row[f"{g}_bonus"]),
+        "cbit":      float(row[f"{g}_cbit"]) / 100.0,
+        "gc_rate":   gc_rate,                   # None → fall back to Bernoulli CS
+        "lam_saves": lam_saves,                 # 0.0 for non-GKs
+        "p_pen_opp": p_pen_opp,                 # P(GK faces a penalty); 0.0 for non-GKs/DGWs
     }
 
 
@@ -96,16 +167,32 @@ def simulate(player: dict, n: int, rng: np.random.Generator) -> np.ndarray:
     Run n Monte Carlo simulations for a player in one GW.
 
     Scoring components:
-      1. Appearance  – truncated normal around xMins → 0 / 1 / 2 pts
+      1. Appearance  – GK: Bernoulli(xMins/90) × 90 mins (bimodal: play full game or not at all)
+                       Outfield: truncated normal around xMins → 0 / 1 / 2 pts
       2. Goals       – Poisson(λ_goals × min_scale) × position multiplier
                        λ_goals = 28_goals (total goals; Solio's penalty contribution embedded)
       3. Assists     – Poisson(λ × min_scale) × 3
-      4. Clean sheet – Bernoulli(p_cs); GK/DEF need 60+ mins, MID any mins
+      4. Clean sheet / Goals conceded (GK/DEF, single GW with fixture data):
+                       GC ~ Poisson(λ_gc); CS awarded when GC == 0 and played 60+ mins;
+                       −floor(GC / 2) pts deducted for any playing time.
+                       This unified draw ensures CS and GC deductions are self-consistent
+                       (verified: exp(−λ_gc) ≈ Solio p_cs within ±0.006 for all teams/SGWs).
+                     (DGW / no fixture data fallback): Bernoulli(p_cs), no GC deduction.
       5. Bonus       – Poisson(λ_bonus) capped at 3 (zero-inflated naturally)
-      6. CBIT        – Bernoulli(p_cbit) × 2
+      6. CBIT        – Bernoulli(p_cbit × min_scale) × 2; scaled by minutes since defcon%
+                       is calibrated against expected mins, not a per-90 rate.
       7. Penalty miss – Bernoulli(p_pen × mins/90) for taken, Bernoulli(1−pen_conv) for
                         missed → −2 pts. Scored penalties already in the goals Poisson draw;
                         only the miss downside is added here since it is absent from 28_Pts.
+      8. GK save points – Poisson(λ_saves) // 3; λ_saves derived from λ_gc via OLS
+                          (λ_saves = 1.08×λ_gc + 1.01, r=0.82, 168 SGW observations).
+                          Falls back to λ_saves = 2.50 for DGW / no fixture data.
+                          Zero for non-GK positions.
+      9. GK penalty save – Bernoulli(p_pen_opp) draws whether the opponent takes a
+                           penalty; if so Bernoulli(1−pen_conv) determines whether the
+                           GK saves it → +5 pts. p_pen_opp = sum of opponent players'
+                           P(takes penalty), derived from the {g}_OPP fixture column and
+                           penalties.csv. Zero for non-GKs and DGWs.
     """
     xmins = player["xmins"]
     pos   = player["pos"]
@@ -115,10 +202,17 @@ def simulate(player: dict, n: int, rng: np.random.Generator) -> np.ndarray:
         return np.zeros(n, dtype=float)
 
     # ── 1. Simulate actual minutes ───────────────────────────────────────────
-    # Truncated normal centred at xMins (std=15) clipped to [0, 90].
-    # std=15 captures rotation risk, early subs, and occasional injuries.
-    raw_mins    = rng.normal(loc=xmins, scale=15.0, size=n)
-    actual_mins = np.clip(raw_mins, 0.0, 90.0)
+    if pos == "G":
+        # Goalkeepers are almost never substituted — xMins ≈ P(starts) × 90.
+        # Model as Bernoulli(p_play): each simulation the GK either plays the
+        # full 90 minutes or doesn't feature at all.
+        p_play      = np.clip(xmins / 90.0, 0.0, 1.0)
+        actual_mins = np.where(rng.binomial(1, p_play, n).astype(bool), 90.0, 0.0)
+    else:
+        # Outfield: truncated normal centred at xMins (std=15) clipped to [0, 90].
+        # std=15 captures rotation risk, early subs, and occasional injuries.
+        raw_mins    = rng.normal(loc=xmins, scale=15.0, size=n)
+        actual_mins = np.clip(raw_mins, 0.0, 90.0)
 
     # ── 2. Appearance points ─────────────────────────────────────────────────
     appear = np.where(
@@ -147,24 +241,66 @@ def simulate(player: dict, n: int, rng: np.random.Generator) -> np.ndarray:
     assists    = rng.poisson(player["assists"] * min_scale)
     assist_pts = assists * ASSIST_PTS
 
-    # ── 6. Clean sheet ───────────────────────────────────────────────────────
+    # ── 6. Clean sheet / Goals conceded ──────────────────────────────────────
     played    = actual_mins > 0
     played_60 = actual_mins >= MINS_FULL
-    cs_hit    = rng.binomial(1, player["cs"], n).astype(bool)
-    if pos in ("G", "D"):
-        cs_pts = np.where(cs_hit & played_60, CS_PTS[pos], 0)
+    gc_rate   = player.get("gc_rate")
+
+    if gc_rate is not None:
+        # GK/DEF/MID single GW: unified GC draw keeps CS and GC deduction consistent.
+        # exp(−λ_gc) ≈ Solio p_cs (verified within ±0.006 for all teams/SGWs).
+        gc_sim = rng.poisson(gc_rate, n)
+        if pos in ("G", "D"):
+            # 4 CS pts, need 60+ mins; −1 pt per 2 goals conceded
+            cs_pts = np.where((gc_sim == 0) & played_60, CS_PTS[pos], 0)
+            gc_pts = -(gc_sim // 2) * played
+        else:
+            # MID: 1 CS pt, any playing minutes; no GC deduction
+            cs_pts = np.where((gc_sim == 0) & played, CS_PTS[pos], 0)
+            gc_pts = 0
     else:
-        cs_pts = np.where(cs_hit & played, CS_PTS[pos], 0)
+        # Fallback: FWD, DGW, or no fixture data — independent Bernoulli CS.
+        gc_sim = None
+        cs_hit = rng.binomial(1, player["cs"], n).astype(bool)
+        if pos in ("G", "D"):
+            cs_pts = np.where(cs_hit & played_60, CS_PTS[pos], 0)
+        else:
+            cs_pts = np.where(cs_hit & played, CS_PTS[pos], 0)
+        gc_pts = 0
 
     # ── 7. Bonus (Poisson capped at 3) ──────────────────────────────────────
     raw_bonus = rng.poisson(player["bonus"], n)
     bonus_pts = np.minimum(raw_bonus, 3) * played
 
     # ── 8. CBIT bonus ────────────────────────────────────────────────────────
-    cbit_pts = rng.binomial(1, player["cbit"], n) * CBIT_PTS * played
+    # defcon% is tied to expected mins (not a per-90 rate), so scale by
+    # min_scale so that partial appearances reduce the probability proportionally.
+    # min_scale is already 0 when actual_mins == 0, so no extra `played` gate needed.
+    cbit_prob = np.clip(player["cbit"] * min_scale, 0.0, 1.0)
+    cbit_pts  = rng.binomial(1, cbit_prob, n) * CBIT_PTS
+
+    # ── 9. GK save points ────────────────────────────────────────────────────
+    # +1 pt per 3 saves made. λ_saves is 0 for non-GKs.
+    # Rate derived from λ_gc via OLS (r=0.82); fallback to league average for
+    # DGWs / no fixture data. Gated by played so non-playing GKs score 0.
+    saves     = rng.poisson(player["lam_saves"], n) if player["lam_saves"] > 0 else np.zeros(n, dtype=int)
+    save_pts  = (saves // SAVES_PER_SAVE_PT) * played
+
+    # ── 10. GK penalty save ───────────────────────────────────────────────────
+    # p_pen_opp = P(opponent takes a penalty this GW), derived from the sum of
+    # all opponent players' P(takes penalty).  If a penalty is faced, the GK
+    # saves it with probability (1 − pen_conv).  Zero for non-GKs and DGWs.
+    p_pen_opp = player["p_pen_opp"]
+    if p_pen_opp > 0:
+        pen_faced    = rng.binomial(1, np.clip(p_pen_opp, 0.0, 1.0), n).astype(bool) & played
+        pen_saved_gk = pen_faced & ~rng.binomial(1, player["pen_conv"], n).astype(bool)
+        pen_save_pts = pen_saved_gk.astype(int) * PEN_SAVE_PTS
+    else:
+        pen_save_pts = 0
 
     return (
-        appear + goal_pts + pen_miss_pts + assist_pts + cs_pts + bonus_pts + cbit_pts
+        appear + goal_pts + pen_miss_pts + assist_pts + cs_pts + gc_pts + bonus_pts
+        + cbit_pts + save_pts + pen_save_pts
     ).astype(float)
 
 
@@ -452,6 +588,7 @@ def main() -> None:
 
     proj = pd.read_csv(DATA_DIR / "projection_all_metrics.csv")
     pen  = pd.read_csv(DATA_DIR / "penalties.csv")
+    fix  = pd.read_csv(DATA_DIR / "fixture_difficulty_all_metrics.csv")
 
     rng = np.random.default_rng(args.seed)
 
@@ -461,8 +598,8 @@ def main() -> None:
     pos1 = pos2 = ""
 
     for gw in args.gws:
-        p1 = load_player_data(proj, pen, args.player1, gw, args.pen_conv)
-        p2 = load_player_data(proj, pen, args.player2, gw, args.pen_conv)
+        p1 = load_player_data(proj, pen, args.player1, gw, args.pen_conv, fix)
+        p2 = load_player_data(proj, pen, args.player2, gw, args.pen_conv, fix)
         pts1_per_gw.append(simulate(p1, args.n_sims, rng))
         pts2_per_gw.append(simulate(p2, args.n_sims, rng))
         ev_sum1 += p1["ev"]

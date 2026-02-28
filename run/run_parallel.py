@@ -8,7 +8,7 @@
 #          run_parallel_solves() chip filter, tqdm progress bar,
 #            as_completed pattern, parallel="off" for macOS, gap=0.002;
 #          __main__ block switched to randomised stress test (N=50,
-#            randomization_strength=1.2)
+#            randomization_strength=1)
 
 import argparse
 import os
@@ -310,7 +310,7 @@ if __name__ == "__main__":
         {
             "randomized": True,
             "randomization_seed": i,
-            "randomization_strength": 1.2,
+            "randomization_strength": 1,
             **({"booked_transfers": forced_sell_entries + forced_buy_entries} if forced_sell_entries or forced_buy_entries else {}),
         }
         for i in range(N_RUNS)
