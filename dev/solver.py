@@ -167,8 +167,11 @@ def prep_data(my_data, options):
     cutoff = merged_data["total_ev"].quantile((100 - options.get("keep_top_ev_percent", 10)) / 100)
     safe_players_due_ev = merged_data[(merged_data["total_ev"] > cutoff)]["ID"].tolist()
 
+    safe_min_price = options.get("safe_min_price", 0)
+    safe_players_due_min_price = merged_data[merged_data["now_cost"] / 10 > safe_min_price]["ID"].tolist() if safe_min_price else []
+
     initial_squad = [int(i["element"]) for i in my_data["picks"]]
-    safe_players = initial_squad + options.get("locked", []) + options.get("keep", []) + locked_next_gw + safe_players_due_price + safe_players_due_ev
+    safe_players = initial_squad + options.get("locked", []) + options.get("keep", []) + locked_next_gw + safe_players_due_price + safe_players_due_ev + safe_players_due_min_price
 
     for bt in options.get("booked_transfers", []):
         if bt.get("transfer_in"):

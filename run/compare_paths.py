@@ -45,31 +45,27 @@ FORCED_SELLS = [
 #   "locked_next_gw" — list of player IDs forced into squad this GW (optional)
 #   Any other solver option to override for this specific path only.
 PATHS = [
+    # {
+    #     "name": "WC32, BB33, FH34",
+    # },
+    # {
+    #     "name": "FH29 (WC+BB free)",
+    #     "use_fh": [29],
+    #     "use_wc": [],    # clears the WC32 from user_settings.json
+    #     "use_bb": [],    # clears the BB33 from user_settings.json
+    #     "chip_limits": {"wc": 1, "bb": 1, "fh": 1, "tc": 0},
+    # },
     {
-        "name": "Ndiaye",
-        "locked_next_gw": [299],
+        "name": "Salah", 
+        "locked_next_gw": [381],
     },
     {
-        "name": "Wilson",
-        "locked_next_gw": [329],
+        "name": "Ekitike", 
+        "locked_next_gw": [661],
+        "name": "Salah", 
+        "locked_next_gw": [381],
+        
     },
-    {
-        "name": "Schade",
-        "locked_next_gw": [120],
-    },
-    {
-        "name": "Dango",
-        "locked_next_gw": [83],
-    },
-    {
-        "name": "Szoboszlai",
-        "locked_next_gw": [387],
-    },
-    {
-        "name": "Gakpo",
-        "locked_next_gw": [384],
-    },
-    
     # Add more paths below:
     # {
     #     "name": "Schade",
@@ -87,8 +83,8 @@ SUPPRESS_OUTPUT = True
 #                 Each path shares the same seeds, so draw difficulty is identical —
 #                 win rate (how often a path scores highest) is the ranking metric.
 #                 Robustness solves use horizon=6 and gap=0.002 for speed.
-N_RUNS = 30
-RANDOMIZATION_STRENGTH = 1
+N_RUNS = 50
+RANDOMIZATION_STRENGTH = 0.9
 
 # ─── END USER CONFIGURATION ───────────────────────────────────────────────────
 

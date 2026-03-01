@@ -6,15 +6,16 @@
     "no_transfer_last_gws": 2,
     "decay_base": 0.9,
     "ft_value_list": {
-        "2": 2.2,
-        "3": 1.7,
-        "4": 1.4,
-        "5": 1.1
+        "2": 2.5,
+        "3": 1.9,
+        "4": 1.6,
+        "5": 1.2
     },
+    "safe_min_price": 7.5,
     "xmin_lb": 450,
     "ev_per_price_cutoff": 30,
     "keep_top_ev_percent": 5,
-    "banned": [],
+    "banned": [], 
     "locked": [],
     "use_wc": [32],
     "use_bb": [33],

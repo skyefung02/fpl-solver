@@ -305,12 +305,12 @@ if __name__ == "__main__":
     # different xP values each time. Players that appear as transfers across
     # most runs are robust picks; those that appear rarely are marginal.
     # Results are ranked by score and saved to chip_solve.csv.
-    N_RUNS = 50
+    N_RUNS = 100
     scenarios = [
         {
             "randomized": True,
             "randomization_seed": i,
-            "randomization_strength": 1,
+            "randomization_strength": 0.9,
             **({"booked_transfers": forced_sell_entries + forced_buy_entries} if forced_sell_entries or forced_buy_entries else {}),
         }
         for i in range(N_RUNS)
