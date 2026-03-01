@@ -21,6 +21,8 @@
     "use_bb": [33],
     "use_fh": [34],
     "use_tc": [],
+    "solver": "gurobi",
+    "use_cmd": true,
     "verbose": true,
     "num_iterations": 5,
     "iteration_criteria": "this_gw_transfer_in_out"

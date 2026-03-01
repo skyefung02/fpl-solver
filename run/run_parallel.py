@@ -188,6 +188,7 @@ def run_parallel_solves(chip_combinations, max_workers=None, suppress_output=Tru
     # horizon - this is the gameweek horizon that we are solving for, in each solve 
     # gap - solver stops when it can prove the current best solution is within 0.2% of optimal
     options = {
+        "solver": "gurobi",  # switch to "highs" to revert to HiGHS
         "verbose": False,
         "print_result_table": False,
         "print_decay_metrics": False,

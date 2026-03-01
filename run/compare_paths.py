@@ -21,12 +21,13 @@ from utils import cached_request, load_settings
 
 # Settings applied to every path, overriding user_settings.json.
 SOLVER_OPTIONS = {
+    "solver": "gurobi",
     "verbose": False,
     "print_result_table": False,
     "print_decay_metrics": False,
     "print_transfer_chip_summary": False,
     "print_squads": False,
-    "parallel": "off",       # critical on macOS — prevents HiGHS competing with subprocess workers
+    "parallel": "off",
     "num_iterations": 1,
     # "gap": 0.002,          # uncomment to trade accuracy for speed (0.2% optimality gap)
 }
@@ -56,15 +57,12 @@ PATHS = [
     #     "chip_limits": {"wc": 1, "bb": 1, "fh": 1, "tc": 0},
     # },
     {
-        "name": "Salah", 
-        "locked_next_gw": [381],
+        "name": "Ekitike",
+        "locked_next_gw": [661],
     },
     {
-        "name": "Ekitike", 
-        "locked_next_gw": [661],
-        "name": "Salah", 
-        "locked_next_gw": [381],
-        
+        "name": "Salah + Ekitike",
+        "locked_next_gw": [381, 661],
     },
     # Add more paths below:
     # {
