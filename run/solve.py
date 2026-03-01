@@ -214,6 +214,9 @@ def solve_regular(runtime_options=None):
     if solutions_file := options.get("solutions_file"):
         write_line_to_file(solutions_file, result, options)
 
+    if options.get("_return_response"):
+        return result_table, response
+
     return result_table
 
 

@@ -12,7 +12,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 from tabulate import tabulate
 from tqdm import tqdm
-from solve import solve_regular
+from solve import print_transfer_chip_summary, solve_regular
 
 from utils import cached_request, load_settings
 
@@ -56,13 +56,22 @@ PATHS = [
     #     "use_bb": [],    # clears the BB33 from user_settings.json
     #     "chip_limits": {"wc": 1, "bb": 1, "fh": 1, "tc": 0},
     # },
+    # {
+    #     "name": "Ekitike",
+    #     "locked_next_gw": [661],
+    #     "num_transfers": 1
+    # },
+    # {
+    #     "name": "Salah + Ekitike",
+    #     "locked_next_gw": [381, 661],
+    # },
     {
-        "name": "Ekitike",
-        "locked_next_gw": [661],
+        "name": "Salah + DCL",
+        "locked_next_gw": [381, 691],
     },
     {
-        "name": "Salah + Ekitike",
-        "locked_next_gw": [381, 661],
+        "name": "Salah + Watkins",
+        "locked_next_gw": [381, 64],
     },
     # Add more paths below:
     # {
@@ -81,7 +90,7 @@ SUPPRESS_OUTPUT = True
 #                 Each path shares the same seeds, so draw difficulty is identical —
 #                 win rate (how often a path scores highest) is the ranking metric.
 #                 Robustness solves use horizon=6 and gap=0.002 for speed.
-N_RUNS = 50
+N_RUNS = 1
 RANDOMIZATION_STRENGTH = 0.9
 
 # ─── END USER CONFIGURATION ───────────────────────────────────────────────────
@@ -102,6 +111,24 @@ def _solve_silent(args):
     finally:
         os.dup2(saved_fd, 1)
         os.close(saved_fd)
+
+
+def _solve_silent_with_response(args):
+    """Like _solve_silent but returns (result_table, response) for horizon printing."""
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved_fd = os.dup(1)
+    os.dup2(devnull_fd, 1)
+    os.close(devnull_fd)
+    try:
+        return solve_regular({**args, "_return_response": True})
+    finally:
+        os.dup2(saved_fd, 1)
+        os.close(saved_fd)
+
+
+def _solve_regular_with_response(args):
+    """Like solve_regular but returns (result_table, response) for horizon printing."""
+    return solve_regular({**args, "_return_response": True})
 
 
 def _get_next_gw():
@@ -155,6 +182,24 @@ def _signal_strength(p, n):
         return "Strong"
     else:
         return "Very Strong"
+
+
+def _print_path_horizons(path_results_full):
+    """Print GW-by-GW transfer/chip plan for each path (best iteration, ranked by score)."""
+    sorted_results = sorted(path_results_full, key=lambda x: -float(x[1].iloc[0]["score"]))
+
+    print(f"\n{'=' * 66}")
+    print(f"  Full Horizon Plans (best iteration per path, ranked by score)")
+    print(f"{'=' * 66}")
+
+    for name, df, response in sorted_results:
+        best_iter = int(df.iloc[0]["iter"])
+        best_result = next(r for r in response if r["iter"] == best_iter)
+        score = df.iloc[0]["score"]
+        total_xp = sum(gw_stats.get("xP", 0) for _, gw_stats in best_result["statistics"].items())
+
+        print(f"\n--- {name} | Score: {score:.2f} | Total xP: {total_xp:.2f} ---")
+        print_transfer_chip_summary(best_result, {})
 
 
 def _print_path_comparison(path_results, next_gw):
@@ -212,7 +257,7 @@ def run_path_comparison(paths, solver_options, forced_sells=None, suppress_outpu
                       The GW number is resolved automatically from the FPL API.
         suppress_output: if True, suppress HiGHS stdout from subprocesses
     """
-    worker_fn = _solve_silent if suppress_output else solve_regular
+    worker_fn = _solve_silent_with_response if suppress_output else _solve_regular_with_response
     next_gw = _get_next_gw()
 
     # Build booked_transfers entries for forced sells, using the live next_gw
@@ -243,14 +288,16 @@ def run_path_comparison(paths, solver_options, forced_sells=None, suppress_outpu
         }
         for future in tqdm(as_completed(futures), total=len(futures), desc="Comparing paths", unit="path"):
             i, name = futures[future]
-            df = future.result().reset_index(drop=True)
-            path_results[i] = (name, df)
+            df, response = future.result()
+            df = df.reset_index(drop=True)
+            path_results[i] = (name, df, response)
 
-    _print_path_comparison(path_results, next_gw)
+    _print_path_horizons(path_results)
+    _print_path_comparison([(name, df) for name, df, _ in path_results], next_gw)
 
     # Save full results with path label
     all_rows = []
-    for name, df in path_results:
+    for name, df, _ in path_results:
         df = df.copy()
         df.insert(0, "path", name)
         all_rows.append(df)

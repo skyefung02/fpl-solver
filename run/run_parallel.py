@@ -306,7 +306,7 @@ if __name__ == "__main__":
     # different xP values each time. Players that appear as transfers across
     # most runs are robust picks; those that appear rarely are marginal.
     # Results are ranked by score and saved to chip_solve.csv.
-    N_RUNS = 100
+    N_RUNS = 500
     scenarios = [
         {
             "randomized": True,
