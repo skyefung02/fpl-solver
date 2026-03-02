@@ -2,7 +2,7 @@
     "datasource": "projection_all_metrics",
     "team_data": "id",
     "team_id": 79999,
-    "horizon": 3,
+    "horizon": 10,
     "no_transfer_last_gws": 0,
     "decay_base": 0.9,
     "ft_value_list": {
@@ -24,6 +24,5 @@
     "solver": "gurobi",
     "use_cmd": true,
     "verbose": true,
-    "num_iterations": 5,
-    "iteration_criteria": "this_gw_transfer_in_out"
+    "num_iterations": 5
 }

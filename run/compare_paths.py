@@ -12,7 +12,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 from tabulate import tabulate
 from tqdm import tqdm
-from solve import print_transfer_chip_summary, solve_regular
+from solve import solve_regular
 
 from utils import cached_request, load_settings
 
@@ -61,13 +61,17 @@ PATHS = [
         "locked_next_gw": [381, 691],
     },
     {
-        "name": "Salah + Watkins",
-        "locked_next_gw": [381, 64],
+        "name": "Palmer + Ekitike",
+        "locked_next_gw": [235, 661],
     },
-        {
+    {
         "name": "Salah + Ekitike",
         "locked_next_gw": [381, 661],
     },
+    {
+        "name": "Roll",
+        "num_transfers": 0,
+    }
     # Add more paths below:
     # {
     #     "name": "Schade",
@@ -194,7 +198,23 @@ def _print_path_horizons(path_results_full):
         total_xp = sum(gw_stats.get("xP", 0) for _, gw_stats in best_result["statistics"].items())
 
         print(f"\n--- {name} | Score: {score:.2f} | Total xP: {total_xp:.2f} ---")
-        print_transfer_chip_summary(best_result, {})
+        picks = best_result["picks"]
+        for gw in sorted(picks["week"].unique()):
+            chip_text = ""
+            line_text = ""
+            chip = picks.loc[(picks["week"] == gw) & (picks["chip"] != "")]
+            if not chip.empty:
+                chip_text = chip.iloc[0]["chip"]
+                line_text += f"({chip_text}) "
+            sell_text = ", ".join(picks[(picks["week"] == gw) & (picks["transfer_out"] == 1)]["name"].to_list())
+            buy_text = ", ".join(picks[(picks["week"] == gw) & (picks["transfer_in"] == 1)]["name"].to_list())
+            if sell_text != "" or buy_text != "":
+                line_text += sell_text + " -> " + buy_text
+            elif chip_text == "FH":
+                line_text += ""
+            else:
+                line_text += "Roll"
+            print(f"\tGW{gw}: {line_text}")
 
 
 def _print_path_comparison(path_results, next_gw):
