@@ -2,8 +2,8 @@
     "datasource": "projection_all_metrics",
     "team_data": "id",
     "team_id": 79999,
-    "horizon": 10,
-    "no_transfer_last_gws": 2,
+    "horizon": 3,
+    "no_transfer_last_gws": 0,
     "decay_base": 0.9,
     "ft_value_list": {
         "2": 2.5,

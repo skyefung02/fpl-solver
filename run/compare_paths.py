@@ -56,15 +56,6 @@ PATHS = [
     #     "use_bb": [],    # clears the BB33 from user_settings.json
     #     "chip_limits": {"wc": 1, "bb": 1, "fh": 1, "tc": 0},
     # },
-    # {
-    #     "name": "Ekitike",
-    #     "locked_next_gw": [661],
-    #     "num_transfers": 1
-    # },
-    # {
-    #     "name": "Salah + Ekitike",
-    #     "locked_next_gw": [381, 661],
-    # },
     {
         "name": "Salah + DCL",
         "locked_next_gw": [381, 691],
@@ -72,6 +63,10 @@ PATHS = [
     {
         "name": "Salah + Watkins",
         "locked_next_gw": [381, 64],
+    },
+        {
+        "name": "Salah + Ekitike",
+        "locked_next_gw": [381, 661],
     },
     # Add more paths below:
     # {
@@ -260,6 +255,12 @@ def run_path_comparison(paths, solver_options, forced_sells=None, suppress_outpu
     worker_fn = _solve_silent_with_response if suppress_output else _solve_regular_with_response
     next_gw = _get_next_gw()
 
+    # Filter chips to horizon so chips outside [next_gw, next_gw+horizon-1] don't
+    # cause solver errors (same logic as run_robustness_comparison).
+    base_settings = load_settings()
+    _horizon = solver_options.get("horizon", base_settings.get("horizon", 3))
+    chip_overrides = _filter_chips_to_horizon(base_settings, _horizon, next_gw)
+
     # Build booked_transfers entries for forced sells, using the live next_gw
     forced_sell_entries = []
     if forced_sells and next_gw:
@@ -271,7 +272,7 @@ def run_path_comparison(paths, solver_options, forced_sells=None, suppress_outpu
     for path in paths:
         name = path.get("name", "Unnamed")
         path_overrides = {k: v for k, v in path.items() if k != "name"}
-        merged = {**solver_options, **path_overrides}
+        merged = {**solver_options, **chip_overrides, **path_overrides}
         # Merge forced sells into any existing booked_transfers for this path
         if forced_sell_entries:
             existing = merged.get("booked_transfers", [])
