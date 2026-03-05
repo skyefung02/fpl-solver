@@ -25,12 +25,18 @@ Usage:
 import argparse
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+
+def _normalize(s: str) -> str:
+    """Strip diacritics for accent-insensitive name matching (e.g. Munoz → Muñoz)."""
+    return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode("ascii").lower()
+
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -85,7 +91,13 @@ def load_player_data(
     """
     proj_matches = proj[proj["Name"] == name]
     if proj_matches.empty:
-        raise ValueError(f"Player '{name}' not found. Check spelling / capitalisation.")
+        norm = _normalize(name)
+        proj_matches = proj[proj["Name"].map(_normalize) == norm]
+        if proj_matches.empty:
+            raise ValueError(f"Player '{name}' not found. Check spelling / capitalisation.")
+        matched = proj_matches.iloc[0]["Name"]
+        if matched != name:
+            print(f"  [name] '{name}' matched → '{matched}'")
     if team is not None:
         team_matches = proj_matches[proj_matches["Team"] == team]
         if team_matches.empty:
@@ -389,40 +401,73 @@ def _plot_overlay(
         ax.legend(fontsize=8)
 
 
-def _plot_diff(
+# ── Strip / range plot ────────────────────────────────────────────────────────
+
+def _plot_strip(
     ax,
     name1: str, name2: str,
-    diff: np.ndarray,
+    pts1: np.ndarray, pts2: np.ndarray,
     title: str,
 ) -> None:
-    """Head-to-head differential histogram."""
-    dmax      = int(max(abs(diff.min()), abs(diff.max()))) + 1
-    diff_bins = np.arange(-dmax - 0.5, dmax + 1.5, 1)
+    """Horizontal strip/range plot with density-faded bars and blank/haul zones.
 
-    _, _, patches = ax.hist(diff, bins=diff_bins, density=True, alpha=0.85, color="grey")
-    for patch in patches:
-        x_mid = patch.get_x() + patch.get_width() / 2
-        if x_mid > 0:
-            patch.set_facecolor("C0")
-        elif x_mid < 0:
-            patch.set_facecolor("C1")
+    For each player:
+      - thin bar   : 5th–95th percentile
+      - medium bar : 10th–90th percentile
+      - thick bar  : 25th–75th percentile (IQR)
+      - dot        : mean
+      - labels     : p5, μ, p95
+    Overlapping semi-transparent layers give higher colour intensity toward
+    the centre, fading out to the tails.
+    Background: light red zone ≤2 pts (blank potential),
+                light green zone ≥8 pts (haul potential).
+    """
+    for pts, _, color, y in [(pts1, name1, "C0", 1), (pts2, name2, "C1", 0)]:
+        p5, p10, p25, p75, p90, p95 = np.percentile(pts, [5, 10, 25, 75, 90, 95])
+        mean = pts.mean()
 
-    ax.axvline(0, color="black", lw=1.2, alpha=0.5)
+        ax.plot([p5,  p95], [y, y], color=color, lw=2,  alpha=0.25, solid_capstyle="round")
+        ax.plot([p10, p90], [y, y], color=color, lw=7,  alpha=0.20, solid_capstyle="round")
+        ax.plot([p25, p75], [y, y], color=color, lw=14, alpha=0.45, solid_capstyle="round")
+        ax.plot(mean, y, "o", color=color, ms=7, zorder=5)
 
-    pct1  = (diff > 0).mean() * 100
-    pct2  = (diff < 0).mean() * 100
-    pct_t = (diff == 0).mean() * 100
+        ax.text(mean, y + 0.22, f"μ={mean:.1f}", ha="center", va="bottom", fontsize=8, color=color)
 
-    ax.text(0.98, 0.97, f"{name1}\noutscores\n{pct1:.1f}%",
-            transform=ax.transAxes, va="top", ha="right",
-            fontsize=9, fontweight="bold", color="C0")
-    ax.text(0.02, 0.97, f"{name2}\noutscores\n{pct2:.1f}%",
-            transform=ax.transAxes, va="top", ha="left",
-            fontsize=9, fontweight="bold", color="C1")
+    # Zone probabilities
+    p_blank1 = (pts1 <= 2).mean() * 100
+    p_blank2 = (pts2 <= 2).mean() * 100
+    p_haul1  = (pts1 >= 8).mean() * 100
+    p_haul2  = (pts2 >= 8).mean() * 100
 
-    ax.set_xlabel(f"Points margin  ({name1} − {name2})", fontsize=10)
-    ax.set_ylabel("Probability", fontsize=10)
-    ax.set_title(f"{title}  (tie: {pct_t:.1f}%)", fontsize=10)
+    # Shaded zones drawn behind strips (zorder=0), clipped to current data x-range
+    xlo, xhi = ax.get_xlim()
+    if xlo < 2.5:
+        ax.axvspan(xlo, 2.5, color="red", alpha=0.08, zorder=0)
+        ax.text(
+            (xlo + min(2.5, xhi)) / 2, 1.65,
+            f"Blank ≤2\n{name1}: {p_blank1:.0f}%\n{name2}: {p_blank2:.0f}%",
+            ha="center", va="top", fontsize=7.5, color="darkred",
+            multialignment="center",
+        )
+    if xhi > 7.5:
+        ax.axvspan(7.5, xhi, color="green", alpha=0.08, zorder=0)
+        ax.text(
+            (max(7.5, xlo) + xhi) / 2, 1.65,
+            f"Haul ≥8\n{name1}: {p_haul1:.0f}%\n{name2}: {p_haul2:.0f}%",
+            ha="center", va="top", fontsize=7.5, color="darkgreen",
+            multialignment="center",
+        )
+
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels([name2, name1], fontsize=9)
+    for tick, color in zip(ax.get_yticklabels(), ["C1", "C0"]):
+        tick.set_color(color)
+    ax.tick_params(axis="y", length=0)
+    ax.set_xlabel("FPL Points", fontsize=10)
+    ax.set_title(title, fontsize=10)
+    ax.set_ylim(-0.7, 1.7)
+    for spine in ("left", "right", "top"):
+        ax.spines[spine].set_visible(False)
 
 
 # ── Stats text panel ──────────────────────────────────────────────────────────
@@ -453,14 +498,14 @@ def _plot_stats(
             rows.append(f"P(≤{t} pts) : {(cum <= t).mean()*100:.1f}%")
         for t in thresholds_ge:
             rows.append(f"P(≥{t} pts) : {(cum >= t).mean()*100:.1f}%")
-        rows.append(f"p90  : {np.percentile(cum, 90):.0f}")
-        rows.append(f"p95  : {np.percentile(cum, 95):.0f}")
+        rows.append(f"5th percentile  : {np.percentile(cum, 5):.0f}")
+        rows.append(f"95th percentile : {np.percentile(cum, 95):.0f}")
         return "\n".join(rows)
 
     ax.text(0.02, 0.97, _lines(name1, pos1, ev_sum1, cum1),
             transform=ax.transAxes, va="top", ha="left",
             fontsize=8.5, fontfamily="monospace", color="C0")
-    ax.text(0.52, 0.97, _lines(name2, pos2, ev_sum2, cum2),
+    ax.text(0.57, 0.97, _lines(name2, pos2, ev_sum2, cum2),
             transform=ax.transAxes, va="top", ha="left",
             fontsize=8.5, fontfamily="monospace", color="C1")
 
@@ -493,10 +538,10 @@ def plot_comparison(
     n_sims: int,
 ) -> Path:
     """
-    Single GW  → 3-panel layout   (overlay | diff | stats).
-    Multi-GW   → Option B two-row layout:
+    Single GW  → 3-panel layout   (overlay | strip | stats).
+    Multi-GW   → two-row layout:
                    Row 1: per-GW overlaid distributions
-                   Row 2: cumulative overlay | cumulative diff | stats
+                   Row 2: cumulative overlay | cumulative strip | stats
     """
     n_gws = len(gws)
     cum1  = sum(pts1_per_gw)
@@ -504,15 +549,16 @@ def plot_comparison(
 
     if n_gws == 1:
         # ── Single GW: 3-panel layout ─────────────────────────────────────────
-        fig = plt.figure(figsize=(19, 5))
+        fig = plt.figure(figsize=(18, 5))
         gs  = gridspec.GridSpec(1, 3, figure=fig, wspace=0.35,
                                 width_ratios=[2, 2, 1.5])
 
         _plot_overlay(fig.add_subplot(gs[0, 0]), name1, name2,
                       pts1_per_gw[0], pts2_per_gw[0],
                       f"GW{gws[0]} Points Distribution  (n={n_sims:,})")
-        _plot_diff(fig.add_subplot(gs[0, 1]), name1, name2,
-                   cum1 - cum2, f"Head-to-head margin  GW{gws[0]}")
+        _plot_strip(fig.add_subplot(gs[0, 1]), name1, name2,
+                    pts1_per_gw[0], pts2_per_gw[0],
+                    f"GW{gws[0]} Range")
         _plot_stats(fig.add_subplot(gs[0, 2]),
                     name1, pos1, ev_sum1, cum1,
                     name2, pos2, ev_sum2, cum2, gws)
@@ -537,7 +583,7 @@ def plot_comparison(
                 show_legend=(i == 0),
             )
 
-        # Row 2 — cumulative overlay | cumulative diff | stats
+        # Row 2 — cumulative overlay | strip | stats
         gs_bot = gridspec.GridSpec(
             1, 3, figure=fig,
             left=0.05, right=0.98, top=0.43, bottom=0.08,
@@ -546,8 +592,9 @@ def plot_comparison(
         _plot_overlay(fig.add_subplot(gs_bot[0, 0]), name1, name2,
                       cum1, cum2,
                       f"Cumulative {gw_range}  (n={n_sims:,})")
-        _plot_diff(fig.add_subplot(gs_bot[0, 1]), name1, name2,
-                   cum1 - cum2, f"Cumulative head-to-head  {gw_range}")
+        _plot_strip(fig.add_subplot(gs_bot[0, 1]), name1, name2,
+                    cum1, cum2,
+                    f"Cumulative Range  {gw_range}")
         _plot_stats(fig.add_subplot(gs_bot[0, 2]),
                     name1, pos1, ev_sum1, cum1,
                     name2, pos2, ev_sum2, cum2, gws)
@@ -574,9 +621,13 @@ def main() -> None:
                         help="Gameweek number(s), e.g. --gws 28  or  --gws 28 29 30")
     parser.add_argument("--player1", type=str, required=True,
                         help="First player name (exact match)")
+    parser.add_argument("--team1",   type=str, default=None,
+                        help="Team of player1, to disambiguate duplicate names")
     parser.add_argument("--player2", type=str, required=True,
                         help="Second player name (exact match)")
-    parser.add_argument("--n_sims",  type=int, default=250_000,
+    parser.add_argument("--team2",   type=str, default=None,
+                        help="Team of player2, to disambiguate duplicate names")
+    parser.add_argument("--n_sims",  type=int, default= 500_000,
                         help="Number of simulations")
     parser.add_argument("--seed",    type=int, default=42,
                         help="RNG seed for reproducibility")
@@ -598,8 +649,8 @@ def main() -> None:
     pos1 = pos2 = ""
 
     for gw in args.gws:
-        p1 = load_player_data(proj, pen, args.player1, gw, args.pen_conv, fix)
-        p2 = load_player_data(proj, pen, args.player2, gw, args.pen_conv, fix)
+        p1 = load_player_data(proj, pen, args.player1, gw, args.pen_conv, fix, team=args.team1)
+        p2 = load_player_data(proj, pen, args.player2, gw, args.pen_conv, fix, team=args.team2)
         pts1_per_gw.append(simulate(p1, args.n_sims, rng))
         pts2_per_gw.append(simulate(p2, args.n_sims, rng))
         ev_sum1 += p1["ev"]
