@@ -505,7 +505,7 @@ def _plot_stats(
     ax.text(0.02, 0.97, _lines(name1, pos1, ev_sum1, cum1),
             transform=ax.transAxes, va="top", ha="left",
             fontsize=8.5, fontfamily="monospace", color="C0")
-    ax.text(0.57, 0.97, _lines(name2, pos2, ev_sum2, cum2),
+    ax.text(0.58, 0.97, _lines(name2, pos2, ev_sum2, cum2),
             transform=ax.transAxes, va="top", ha="left",
             fontsize=8.5, fontfamily="monospace", color="C1")
 
