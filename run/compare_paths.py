@@ -26,9 +26,10 @@ SOLVER_OPTIONS = {
     "print_result_table": False,
     "print_decay_metrics": False,
     "print_transfer_chip_summary": False,
-    "print_squads": False,
+    "print_squads": True,
     "parallel": "off",
     "num_iterations": 1,
+    "use_fh": [34],
     # "gap": 0.002,          # uncomment to trade accuracy for speed (0.2% optimality gap)
 }
 
@@ -46,42 +47,22 @@ FORCED_SELLS = [
 #   "locked_next_gw" — list of player IDs forced into squad this GW (optional)
 #   Any other solver option to override for this specific path only.
 PATHS = [
-    # {
-    #     "name": "WC32, BB33, FH34",
-    # },
-    # {
-    #     "name": "FH29 (WC+BB free)",
-    #     "use_fh": [29],
-    #     "use_wc": [],    # clears the WC32 from user_settings.json
-    #     "use_bb": [],    # clears the BB33 from user_settings.json
-    #     "chip_limits": {"wc": 1, "bb": 1, "fh": 1, "tc": 0},
-    # },
     {
-        "name": "Salah + DCL",
-        "locked_next_gw": [381, 691],
+        "name": "Free",
     },
     {
-        "name": "Palmer + Ekitike",
-        "locked_next_gw": [235, 661],
+        "name": "No Palace",
+        "banned_team": "Crystal Palace", 
     },
     {
-        "name": "Salah + Ekitike",
-        "locked_next_gw": [381, 661],
+        "name": "Max 3 transfers",
+        "this_gw_transfer_limit": 3,  
     },
-    {
-        "name": "Roll",
-        "num_transfers": 0,
-    }
-    # Add more paths below:
-    # {
-    #     "name": "Schade",
-    #     "locked_next_gw": [???],   # fill in Schade's FPL ID
-    # },
 ]
 
 # True  → subprocess output hidden, only progress bar shown (recommended)
 # False → full solver output printed per path (useful for debugging)
-SUPPRESS_OUTPUT = True
+SUPPRESS_OUTPUT = False
 
 # N_RUNS controls which mode runs:
 #   N_RUNS = 1  → deterministic path comparison (one solve per path, base projections)
@@ -89,7 +70,7 @@ SUPPRESS_OUTPUT = True
 #                 Each path shares the same seeds, so draw difficulty is identical —
 #                 win rate (how often a path scores highest) is the ranking metric.
 #                 Robustness solves use horizon=6 and gap=0.002 for speed.
-N_RUNS = 1
+N_RUNS = 1000
 RANDOMIZATION_STRENGTH = 0.9
 
 # ─── END USER CONFIGURATION ───────────────────────────────────────────────────

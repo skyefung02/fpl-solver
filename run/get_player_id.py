@@ -1,3 +1,4 @@
+import unicodedata
 import pandas as pd
 import sys
 import os
@@ -5,9 +6,14 @@ import os
 DATA_FILE = os.path.join(os.path.dirname(__file__), "../data/projection_all_metrics.csv")
 
 
+def _strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+
+
 def get_player_id(name: str) -> None:
     df = pd.read_csv(DATA_FILE, usecols=["ID", "Name"])
-    matches = df[df["Name"].str.contains(name, case=False, na=False)]
+    normalised_names = df["Name"].fillna("").map(_strip_accents)
+    matches = df[normalised_names.str.contains(_strip_accents(name), case=False, na=False)]
 
     if matches.empty:
         print(f"No player found matching '{name}'")
