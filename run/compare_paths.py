@@ -49,15 +49,21 @@ FORCED_SELLS = [
 PATHS = [
     {
         "name": "Free",
+ 
     },
     {
-        "name": "No Palace",
-        "banned_team": "Crystal Palace", 
+        "name": "Mosquera + Salah",
+        "locked_next_gw": [662, [381, 38]],
     },
+    # {
+    #     "name": "Mosquera ",
+    #     "locked_next_gw": [662],
+    # },
     {
-        "name": "Max 3 transfers",
-        "this_gw_transfer_limit": 3,  
+        "name": "Trossard Spice",
+        "locked_next_gw": [20],  
     },
+    
 ]
 
 # True  → subprocess output hidden, only progress bar shown (recommended)
@@ -70,7 +76,7 @@ SUPPRESS_OUTPUT = False
 #                 Each path shares the same seeds, so draw difficulty is identical —
 #                 win rate (how often a path scores highest) is the ranking metric.
 #                 Robustness solves use horizon=6 and gap=0.002 for speed.
-N_RUNS = 1000
+N_RUNS = 1
 RANDOMIZATION_STRENGTH = 0.9
 
 # ─── END USER CONFIGURATION ───────────────────────────────────────────────────
@@ -198,10 +204,10 @@ def _print_path_horizons(path_results_full):
             print(f"\tGW{gw}: {line_text}")
 
 
-def _print_path_comparison(path_results, next_gw):
+def _print_path_comparison(path_results_full, next_gw):
     """Print a headline summary table followed by full iterations grouped by path."""
     gw_label = f"GW{next_gw}" if next_gw else "GW?"
-    n_iters = max(len(df) for _, df in path_results)
+    n_iters = max(len(df) for _, df, _ in path_results_full)
 
     print(f"\n{'=' * 66}")
     print(f"  Path Comparison — {gw_label}, {n_iters} iterations per path")
@@ -209,7 +215,7 @@ def _print_path_comparison(path_results, next_gw):
 
     # --- Headline: best iter per path, sorted by score ---
     headline_rows = []
-    for name, df in path_results:
+    for name, df, _ in path_results_full:
         best = df.iloc[0]
         sell = str(best["sell"]).strip()
         buy = str(best["buy"]).strip()
@@ -232,10 +238,29 @@ def _print_path_comparison(path_results, next_gw):
 
     # --- Full iterations per path ---
     print("\n\nFULL ITERATIONS BY PATH")
-    for name, df in path_results:
+    for name, df, response in path_results_full:
         print(f"\n--- {name} ---")
-        display = df[["iter", "sell", "buy", "chip", "score"]].copy()
-        print(tabulate(display, headers="keys", tablefmt="simple", showindex=False, floatfmt=".2f"))
+        for _, row in df.iterrows():
+            iter_num = int(row["iter"])
+            print(f"  Iter {iter_num} | Score: {row['score']:.2f}")
+            result = next(r for r in response if r["iter"] == iter_num)
+            picks = result["picks"]
+            for gw in sorted(picks["week"].unique()):
+                chip_text = ""
+                line_text = ""
+                chip = picks.loc[(picks["week"] == gw) & (picks["chip"] != "")]
+                if not chip.empty:
+                    chip_text = chip.iloc[0]["chip"]
+                    line_text += f"({chip_text}) "
+                sell_text = ", ".join(picks[(picks["week"] == gw) & (picks["transfer_out"] == 1)]["name"].to_list())
+                buy_text = ", ".join(picks[(picks["week"] == gw) & (picks["transfer_in"] == 1)]["name"].to_list())
+                if sell_text != "" or buy_text != "":
+                    line_text += sell_text + " -> " + buy_text
+                elif chip_text == "FH":
+                    line_text += ""
+                else:
+                    line_text += "Roll"
+                print(f"\t  GW{gw}: {line_text}")
 
     print()
 
@@ -295,7 +320,7 @@ def run_path_comparison(paths, solver_options, forced_sells=None, suppress_outpu
             path_results[i] = (name, df, response)
 
     _print_path_horizons(path_results)
-    _print_path_comparison([(name, df) for name, df, _ in path_results], next_gw)
+    _print_path_comparison(path_results, next_gw)
 
     # Save full results with path label
     all_rows = []

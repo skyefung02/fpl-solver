@@ -1,3 +1,4 @@
+import fcntl
 import json
 import random
 import string
@@ -114,15 +115,23 @@ def cached_request(url):
         response.raise_for_status()
         data = response.json()
 
-        # Update cache
-        cache[url] = {
-            "data": data,
-            "timestamp": current_time
-        }
-
-        # Save cache to file
-        with open(CACHE_FILE, "w") as f:
-            json.dump(cache, f, indent=2)
+        # Acquire exclusive lock, re-read, write atomically so parallel processes
+        # don't corrupt the cache file.
+        lock_path = CACHE_FILE.with_suffix(".lock")
+        with open(lock_path, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            locked_cache = {}
+            if CACHE_FILE.exists():
+                try:
+                    with open(CACHE_FILE) as f:
+                        locked_cache = json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    locked_cache = {}
+            locked_cache[url] = {"data": data, "timestamp": current_time}
+            tmp = CACHE_FILE.with_suffix(".tmp")
+            with open(tmp, "w") as f:
+                json.dump(locked_cache, f, indent=2)
+            tmp.replace(CACHE_FILE)
 
         return data
 

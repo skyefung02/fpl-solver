@@ -610,6 +610,13 @@ def solve_multi_period_fpl(data, options):
         model.add_constraints((so.expr_sum(squad[p, w] for w in gws) == 0 for p in banned_players if p in players), name="ban_player")
         model.add_constraints((so.expr_sum(squad_fh[p, w] for w in gws) == 0 for p in banned_players if p in players), name="ban_player_fh")
 
+    if options.get("banned_team", None):
+        print("OC - Banned Team")
+        banned_team_names = [t.lower() for t in options["banned_team"]] if isinstance(options["banned_team"], list) else [options["banned_team"].lower()]
+        banned_by_team = [p for p in players if player_team[p].lower() in banned_team_names]
+        model.add_constraints((so.expr_sum(squad[p, w] for w in gws) == 0 for p in banned_by_team), name="ban_team_player")
+        model.add_constraints((so.expr_sum(squad_fh[p, w] for w in gws) == 0 for p in banned_by_team), name="ban_team_player_fh")
+
     if options.get("banned_next_gw", None):
         print("OC - Banned Next GW")
         banned_in_gw = [(x, gws[0]) if isinstance(x, int) else tuple(x) for x in options["banned_next_gw"]]
@@ -624,7 +631,7 @@ def solve_multi_period_fpl(data, options):
     if options.get("locked_next_gw", None):
         print("OC - Locked Next GW")
         locked_in_gw = [(x, gws[0]) if isinstance(x, int) else tuple(x) for x in options["locked_next_gw"]]
-        model.add_constraints((squad[p0, p1] == 1 for (p0, p1) in locked_in_gw), name="lock_player_specified_gw")
+        model.add_constraints((squad[p0, p1] + squad_fh[p0, p1] == 1 for (p0, p1) in locked_in_gw), name="lock_player_specified_gw")
 
     if options.get("no_future_transfer", None):
         print("OC - No Future Tr")
@@ -662,6 +669,13 @@ def solve_multi_period_fpl(data, options):
             so.expr_sum(transfer_in[p, w] for p in players for w in gws if w > next_gw and w not in options.get("use_wc", []))
             <= options["future_transfer_limit"],
             name="future_tr_limit",
+        )
+
+    if options.get("this_gw_transfer_limit", None) is not None:
+        print("OC - This GW TR Limit")
+        model.add_constraint(
+            so.expr_sum(transfer_in[p, next_gw] for p in players) <= options["this_gw_transfer_limit"],
+            name="this_gw_tr_limit",
         )
 
     if options.get("no_transfer_gws", None):
@@ -950,7 +964,9 @@ def solve_multi_period_fpl(data, options):
             use_cmd = options.get("use_cmd", False)
             gap = options.get("gap", 0)
             sol_file_name = sol_file_name.replace("_sol", "").replace("txt", "sol")
-            command = f"gurobi_cl MIPGap={gap} ResultFile={sol_file_name} {mps_file_name}"
+            threads = options.get("threads")
+            thread_param = f"Threads={threads} " if threads is not None else ""
+            command = f"gurobi_cl MIPGap={gap} {thread_param}ResultFile={sol_file_name} {mps_file_name}"
 
             if use_cmd:
                 os.system(command)

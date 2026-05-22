@@ -186,7 +186,7 @@ def solve_regular(runtime_options=None):
 
     result_table = pd.DataFrame(response)
     result_table = result_table.sort_values(by="score", ascending=False)
-    result_table = result_table[["iter", "sell", "buy", "chip", "score"]]
+    result_table = result_table[["iter", "sell", "buy", "chip", "total_xp", "score"]]
 
     dataframe_format = options.get("dataframe_format", "plain")
 
