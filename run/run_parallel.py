@@ -223,7 +223,7 @@ def run_parallel_solves(chip_combinations, max_workers=None, suppress_output=Tru
     results = []
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(worker_fn, arg): i for i, arg in enumerate(args)}
-        for future in tqdm(as_completed(futures), total=total, desc="Solving", unit="solve"):
+        for future in tqdm(as_completed(futures), total=total, desc="Solving", unit="solve", mininterval=0.5):
             results.append(future.result())
 
     df = pd.concat(results).sort_values(by="score", ascending=False).reset_index(drop=True)
