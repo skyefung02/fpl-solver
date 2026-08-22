@@ -15,8 +15,22 @@ Run this only once the gameweek is final. Until bonus is confirmed the standings
 endpoint serves provisional totals, so an early freeze captures a cohort ranked
 on numbers that then reshuffle. --force overrides the check.
 
-The cohort's entry IDs are written alongside the EO table so the same managers
-can be tracked into later gameweeks.
+Two modes, and the difference matters:
+
+  (default)        freeze the current top-N and measure their picks for `gw`. This is the
+                   t=0 state - the squads that cohort holds entering the week ahead.
+  --from-cohort N  reuse the cohort frozen at gameweek N and measure *those same* managers
+                   in `gw`. This is the training label: the EO that cohort actually faced.
+
+Re-selecting the pool at the same gameweek you measure conditions the cohort on that
+gameweek's results, which is why the label pull must reuse a previously frozen cohort
+rather than pulling fresh standings.
+
+Note the gates differ. A fresh pull needs the gameweek finalised, because standings are
+provisional until bonus is confirmed. A --from-cohort pull needs only the deadline to have
+passed, because picks are frozen at the deadline and do not depend on points. Automatic
+substitutions are reported separately by the API and are deliberately ignored: the model
+predicts what managers submit, not what the auto-sub engine does afterwards.
 """
 
 import argparse
@@ -24,6 +38,7 @@ import json
 import math
 import random
 import time
+from datetime import UTC, datetime
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
@@ -104,6 +119,38 @@ def check_finalised(session: requests.Session, bootstrap: dict, gw: int) -> list
     if pending:
         reasons.append(f"bonus not yet added for {', '.join(pending)}")
     return reasons
+
+
+def tag_for(gw: int, pool: int, sample_pages: int | None, from_cohort: int | None) -> str:
+    """Output filename stem. A label pull must not collide with the t=0 pull for the same gameweek."""
+    tag = f"gw{gw}_top{pool}"
+    if sample_pages is not None:
+        tag += "_sampled"
+    if from_cohort is not None:
+        tag += f"_cohort{from_cohort}"
+    return tag
+
+
+def load_cohort(from_gw: int, pool: int, sample_pages: int | None) -> tuple[list[int], str]:
+    """Entry IDs frozen at an earlier gameweek, so the same managers can be measured later."""
+    name = f"cohort_{tag_for(from_gw, pool, sample_pages, None)}.json"
+    path = OUT_DIR / name
+    if not path.exists():
+        raise SystemExit(f"No frozen cohort at {path}.\nRun without --from-cohort for GW{from_gw} first to create it.")
+    entry_ids = json.loads(path.read_text()).get("entry_ids") or []
+    if not entry_ids:
+        raise SystemExit(f"{path} contains no entry_ids.")
+    return entry_ids, name
+
+
+def check_deadline_passed(bootstrap: dict, gw: int) -> list[str]:
+    """Picks are fixed at the deadline, so a label pull does not need the gameweek finalised."""
+    event = next((e for e in bootstrap["events"] if e["id"] == gw), None)
+    if event is None:
+        raise SystemExit(f"Gameweek {gw} does not exist.")
+    if datetime.now(UTC) < datetime.fromisoformat(event["deadline_time"].replace("Z", "+00:00")):
+        return [f"the GW{gw} deadline has not passed yet ({event['deadline_time']})"]
+    return []
 
 
 def select_pages(pool: int, sample_pages: int | None, seed: int) -> list[int]:
@@ -209,6 +256,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=24, help="concurrent requests (default: 24)")
     parser.add_argument("--seed", type=int, default=0, help="seed for page sampling (default: 0)")
     parser.add_argument("--top", type=int, default=30, help="rows to print (default: 30)")
+    parser.add_argument("--from-cohort", type=int, metavar="GW", default=None, help="reuse the cohort frozen at that gameweek instead of pulling fresh standings (label pull)")
     parser.add_argument("--force", action="store_true", help="run even if the gameweek is not finalised")
     return parser.parse_args()
 
@@ -222,21 +270,34 @@ def main() -> None:
         raise SystemExit("Could not reach the FPL API.")
     gw = resolve_gameweek(bootstrap, args.gw)
 
-    reasons = check_finalised(session, bootstrap, gw)
+    pool, sample_pages = resolve_scope(args)
+    label_pull = args.from_cohort is not None
+
+    if label_pull:
+        reasons = check_deadline_passed(bootstrap, gw)
+        advice = "Picks only exist once the deadline has passed."
+    else:
+        reasons = check_finalised(session, bootstrap, gw)
+        advice = "Standings are provisional until bonus is confirmed."
     if reasons:
-        message = f"Gameweek {gw} is not final: {'; '.join(reasons)}."
+        message = f"Gameweek {gw}: {'; '.join(reasons)}."
         if not args.force:
-            raise SystemExit(f"{message}\nStandings are provisional until bonus is confirmed. Re-run later, or pass --force.")
+            raise SystemExit(f"{message}\n{advice} Re-run later, or pass --force.")
         print(f"WARNING: {message} Results are provisional.\n")
 
-    pool, sample_pages = resolve_scope(args)
-    pages = select_pages(pool, sample_pages, args.seed)
-    expected = len(pages) * PAGE_SIZE
-    print(f"Gameweek {gw} | rank band top {pool:,} | {len(pages):,} pages -> ~{expected:,} managers")
-    print(f"Estimated runtime ~{(len(pages) + expected) / (2.3 * args.workers) / 60:.1f} min\n")
-
     start = time.time()
-    entry_ids = fetch_cohort(session, pages, args.workers)
+    if label_pull:
+        pages = []
+        entry_ids, cohort_source = load_cohort(args.from_cohort, pool, sample_pages)
+        print(f"Gameweek {gw} | cohort frozen at GW{args.from_cohort} ({cohort_source}) | {len(entry_ids):,} managers")
+        print(f"Estimated runtime ~{len(entry_ids) / (2.3 * args.workers) / 60:.1f} min\n")
+    else:
+        pages = select_pages(pool, sample_pages, args.seed)
+        cohort_source = None
+        expected = len(pages) * PAGE_SIZE
+        print(f"Gameweek {gw} | rank band top {pool:,} | {len(pages):,} pages -> ~{expected:,} managers")
+        print(f"Estimated runtime ~{(len(pages) + expected) / (2.3 * args.workers) / 60:.1f} min\n")
+        entry_ids = fetch_cohort(session, pages, args.workers)
     squads = fetch_many(session, [f"{API}/entry/{e}/event/{gw}/picks/" for e in entry_ids], args.workers, "picks")
     tallies, sampled, chips = aggregate(squads)
     if sampled == 0:
@@ -245,7 +306,7 @@ def main() -> None:
     table = build_table(bootstrap, tallies, sampled)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    tag = f"gw{gw}_top{pool}" + ("_sampled" if sample_pages is not None else "")
+    tag = tag_for(gw, pool, sample_pages, args.from_cohort)
     table.to_csv(OUT_DIR / f"eo_{tag}.csv", index=False)
     meta = {
         "gameweek": gw,
@@ -258,7 +319,9 @@ def main() -> None:
         "forced": args.force,
         "chips": dict(chips),
         "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "entry_ids": entry_ids,
+        "cohort_source": cohort_source,
+        # Only a fresh pull freezes a cohort; a label pull points back at the one it reused.
+        "entry_ids": [] if label_pull else entry_ids,
     }
     (OUT_DIR / f"cohort_{tag}.json").write_text(json.dumps(meta))
 
@@ -270,7 +333,10 @@ def main() -> None:
     print(f"\nTop {args.top} by EO, gameweek {gw}, top {pool:,}:\n")
     print(table.head(args.top).to_string(index=False))
     print(f"\nWritten to {OUT_DIR / f'eo_{tag}.csv'}")
-    print(f"Cohort IDs frozen in {OUT_DIR / f'cohort_{tag}.json'}")
+    if label_pull:
+        print(f"Label for GW{gw} measured against the GW{args.from_cohort} cohort")
+    else:
+        print(f"Cohort IDs frozen in {OUT_DIR / f'cohort_{tag}.json'}")
 
 
 if __name__ == "__main__":
