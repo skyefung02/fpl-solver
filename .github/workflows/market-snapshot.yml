@@ -41,11 +41,11 @@ jobs:
           if git clone --depth 1 --branch data "$REPO" .data 2>/dev/null; then
             echo "Cloned existing data branch."
           else
-            echo "No data branch yet - creating an orphan one."
-            git clone --depth 1 "$REPO" .data
+            echo "No data branch yet - initialising an empty one."
+            mkdir .data
             cd .data
-            git checkout --orphan data
-            git rm -rf . > /dev/null 2>&1 || true
+            git init -q -b data
+            git remote add origin "$REPO"
           fi
 
       - uses: actions/setup-python@v5
