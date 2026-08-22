@@ -1,25 +1,23 @@
-# NOT YET CONNECTED.
+# Logs the FPL transfer market to the orphan `data` branch.
 #
-# The schedule below is deliberately commented out, so this workflow only runs when
-# triggered by hand from the Actions tab. Uncomment the schedule block to start logging
-# automatically. Nothing here takes effect until the file is pushed to the default branch.
+# One hourly cron is all that is scheduled. Densification near the deadline is handled
+# inside the job by --watch, because deadlines move between gameweeks (GW4 is Saturday
+# 12:30Z, not the usual 17:30Z) and cron cannot track that. Once a job starts it polls on
+# its own clock, so the tightest sampling lands where the flow curve is steepest even if
+# the cron tick itself drifted.
 #
-# Notes for when you do switch it on:
-#   - Actions cron drifts (runs can be late by 5-30 min, occasionally skipped). Harmless
-#     here: the counters are cumulative, so the next run still reports the full total.
-#   - Scheduled workflows auto-disable after 60 days of repo inactivity. The commit-back
-#     step below keeps the repo active, so this stays alive on its own.
-#   - On a private repo, hourly costs roughly 720 of the 2,000 free minutes/month.
-#   - Deadlines are not always Saturday 17:30Z (GW4 is Saturday 12:30Z), so the tightened
-#     pre-deadline cron is best-effort. The hourly one is the reliable baseline.
+# Cron drift (5-30 min late, occasionally skipped) is harmless here: the counters are
+# cumulative, so the next successful run reports the full running total.
+#
+# Requires Settings -> Actions -> General -> Workflow permissions = "Read and write".
+# The `data` branch is created automatically on first run if it does not exist.
 
 name: Market snapshot
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: "7 * * * *"         # hourly, offset off the hour to dodge peak-load drift
-  #   - cron: "*/15 12-17 * * 6"  # every 15 min Saturday, into the usual 17:30Z deadline
+  schedule:
+    - cron: "7 * * * *" # hourly, offset off the hour to dodge peak-load cron drift
 
 permissions:
   contents: write
@@ -31,8 +29,24 @@ concurrency:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
+    timeout-minutes: 60 # --watch can hold the job for up to --max-runtime (50 min)
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Check out (or create) the data branch
+        env:
+          REPO: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        run: |
+          if git clone --depth 1 --branch data "$REPO" .data 2>/dev/null; then
+            echo "Cloned existing data branch."
+          else
+            echo "No data branch yet - creating an orphan one."
+            git clone --depth 1 "$REPO" .data
+            cd .data
+            git checkout --orphan data
+            git rm -rf . > /dev/null 2>&1 || true
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -42,22 +56,23 @@ jobs:
       - name: Install dependencies
         run: pip install pandas requests pyarrow
 
-      - name: Take snapshot
+      - name: Take snapshots
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: python run/snapshot_market.py
+          FPL_SNAPSHOT_DIR: ${{ github.workspace }}/.data/snapshots
+        run: python run/snapshot_market.py --watch --top 5
 
-      # The .latest.json marker must be committed too - each run is a fresh checkout,
-      # so without it the unchanged-payload guard would never have anything to compare.
-      - name: Commit snapshot
+      # The .latest.json marker is committed alongside the parts: every run is a fresh
+      # checkout, so without it the unchanged-payload guard has nothing to compare against.
+      - name: Commit to the data branch
+        working-directory: .data
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/effective_ownership/snapshots
+          git add -A
           if git diff --staged --quiet; then
-            echo "No new snapshot to commit (payload unchanged)."
+            echo "No new snapshots to commit (payload unchanged)."
           else
             git commit -m "market snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
-            git pull --rebase --autostash
-            git push
+            git push origin data
           fi
