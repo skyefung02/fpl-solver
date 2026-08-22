@@ -25,6 +25,7 @@ Modes:
   (default)      take one snapshot
   --watch        take one snapshot, then keep polling while inside the pre-deadline window
   --compact GW   merge that gameweek's parts into one parquet
+  --compact-closed  merge every window whose deadline has passed, and prune its parts
   --health       verify the open window is being logged, exit non-zero if not
 """
 
@@ -32,7 +33,7 @@ import argparse
 import json
 import os
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -170,26 +171,60 @@ def run_watch(args: argparse.Namespace) -> None:
         time.sleep(args.dense_interval * 60)
 
 
-def run_compact(args: argparse.Namespace) -> None:
-    """Merge one window's per-poll parts into a single parquet for training."""
-    window_dir = SNAPSHOT_DIR / f"gw{args.compact}"
-    parts = sorted(window_dir.glob("*" + PART_SUFFIX))
+def compact_window(gw: int, prune: bool) -> bool:
+    """Merge one window's parts into its parquet. Returns False if there was nothing to do.
+
+    An existing parquet is folded back in rather than overwritten, so a straggler part
+    arriving after a previous compaction is absorbed instead of discarded.
+    """
+    window_dir = SNAPSHOT_DIR / f"gw{gw}"
+    parts = sorted(window_dir.glob("*" + PART_SUFFIX)) if window_dir.is_dir() else []
     if not parts:
-        raise SystemExit(f"No snapshots found in {window_dir}")
+        return False
 
-    frame = pd.concat([pd.read_csv(p) for p in parts], ignore_index=True)
-    frame = frame.drop_duplicates(["captured_at", "id"]).sort_values(["captured_at", "id"]).reset_index(drop=True)
-
-    out_path = SNAPSHOT_DIR / f"market_gw{args.compact}.parquet"
+    out_path = SNAPSHOT_DIR / f"market_gw{gw}.parquet"
+    frames = [pd.read_csv(p) for p in parts]
+    if out_path.exists():
+        frames.insert(0, pd.read_parquet(out_path))
+    frame = pd.concat(frames, ignore_index=True).drop_duplicates(["captured_at", "id"]).sort_values(["captured_at", "id"]).reset_index(drop=True)
+    part_bytes = sum(p.stat().st_size for p in parts)
     frame.to_parquet(out_path, index=False, compression="zstd")
-    print(f"Merged {len(parts)} parts ({frame['captured_at'].nunique()} distinct snapshots) -> {out_path.name}")
-    print(f"  {len(frame):,} rows, {out_path.stat().st_size / 1024:.0f}KB (parts were {sum(p.stat().st_size for p in parts) / 1024:.0f}KB)")
 
-    if args.prune:
+    print(f"GW{gw}: merged {len(parts)} parts -> {out_path.name} ({frame['captured_at'].nunique()} snapshots, {len(frame):,} rows, {out_path.stat().st_size / 1024:.0f}KB from {part_bytes / 1024:.0f}KB)")
+    if prune:
         for part in parts:
             part.unlink()
         window_dir.rmdir()
         print(f"  pruned {len(parts)} part files")
+    return True
+
+
+def run_compact(args: argparse.Namespace) -> None:
+    if not compact_window(args.compact, args.prune):
+        raise SystemExit(f"No snapshots found in {SNAPSHOT_DIR / f'gw{args.compact}'}")
+
+
+def run_compact_closed(args: argparse.Namespace) -> None:
+    """Compact every window whose deadline has passed, so nothing has to be remembered weekly.
+
+    A grace period after the deadline avoids racing a --watch job that was still running as
+    the deadline went by; those jobs stop at the deadline, and the concurrency group means
+    only one snapshot job runs at a time, so the grace period is belt-and-braces.
+    """
+    now = datetime.now(UTC)
+    deadlines = {e["id"]: deadline_of(e) for e in fetch_bootstrap()["events"]}
+    cutoff = timedelta(hours=args.grace)
+
+    compacted = []
+    for window_dir in sorted(d for d in SNAPSHOT_DIR.glob("gw*") if d.is_dir()):
+        gw = int(window_dir.name.removeprefix("gw"))
+        deadline = deadlines.get(gw)
+        if deadline is None or now < deadline + cutoff:
+            continue
+        if compact_window(gw, prune=True):
+            compacted.append(gw)
+
+    print(f"Compacted {len(compacted)} closed window(s): {compacted}" if compacted else "No closed windows awaiting compaction.")
 
 
 def first_snapshot_time(parts: list[Path]) -> datetime | None:
@@ -250,6 +285,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top", type=int, default=5, help="movers to print, 0 to suppress (default: 5)")
     parser.add_argument("--compact", type=int, metavar="GW", default=None, help="merge that gameweek's parts into one parquet instead of polling")
     parser.add_argument("--prune", action="store_true", help="with --compact, delete the parts afterwards")
+    parser.add_argument("--compact-closed", action="store_true", help="compact and prune every window whose deadline has passed")
+    parser.add_argument("--grace", type=float, default=2.0, help="with --compact-closed, hours to wait after a deadline (default: 2)")
     parser.add_argument("--health", action="store_true", help="check the open window is being logged, exit non-zero if not")
     parser.add_argument("--min-coverage", type=float, default=0.5, help="with --health, minimum fraction of expected snapshots (default: 0.5)")
     parser.add_argument("--max-age", type=float, default=3.0, help="with --health, maximum hours since the newest snapshot (default: 3)")
@@ -260,6 +297,8 @@ def main() -> None:
     args = parse_args()
     if args.compact is not None:
         run_compact(args)
+    elif args.compact_closed:
+        run_compact_closed(args)
     elif args.health:
         run_health(args)
     else:

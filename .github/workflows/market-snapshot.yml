@@ -62,6 +62,15 @@ jobs:
           FPL_SNAPSHOT_DIR: ${{ github.workspace }}/.data/snapshots
         run: python run/snapshot_market.py --watch --top 5
 
+      # No-op except in the hours after a deadline, when the window that just closed gets
+      # merged into a single parquet and its parts pruned. Keeps the working tree tidy and
+      # the training reads fast without anything having to be remembered weekly.
+      - name: Compact closed windows
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          FPL_SNAPSHOT_DIR: ${{ github.workspace }}/.data/snapshots
+        run: python run/snapshot_market.py --compact-closed
+
       # The .latest.json marker is committed alongside the parts: every run is a fresh
       # checkout, so without it the unchanged-payload guard has nothing to compare against.
       - name: Commit to the data branch
