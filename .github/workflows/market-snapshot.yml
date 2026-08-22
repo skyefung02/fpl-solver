@@ -1,0 +1,63 @@
+# NOT YET CONNECTED.
+#
+# The schedule below is deliberately commented out, so this workflow only runs when
+# triggered by hand from the Actions tab. Uncomment the schedule block to start logging
+# automatically. Nothing here takes effect until the file is pushed to the default branch.
+#
+# Notes for when you do switch it on:
+#   - Actions cron drifts (runs can be late by 5-30 min, occasionally skipped). Harmless
+#     here: the counters are cumulative, so the next run still reports the full total.
+#   - Scheduled workflows auto-disable after 60 days of repo inactivity. The commit-back
+#     step below keeps the repo active, so this stays alive on its own.
+#   - On a private repo, hourly costs roughly 720 of the 2,000 free minutes/month.
+#   - Deadlines are not always Saturday 17:30Z (GW4 is Saturday 12:30Z), so the tightened
+#     pre-deadline cron is best-effort. The hourly one is the reliable baseline.
+
+name: Market snapshot
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "7 * * * *"         # hourly, offset off the hour to dodge peak-load drift
+  #   - cron: "*/15 12-17 * * 6"  # every 15 min Saturday, into the usual 17:30Z deadline
+
+permissions:
+  contents: write
+
+concurrency:
+  group: market-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install pandas requests pyarrow
+
+      - name: Take snapshot
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python run/snapshot_market.py
+
+      # The .latest.json marker must be committed too - each run is a fresh checkout,
+      # so without it the unchanged-payload guard would never have anything to compare.
+      - name: Commit snapshot
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/effective_ownership/snapshots
+          if git diff --staged --quiet; then
+            echo "No new snapshot to commit (payload unchanged)."
+          else
+            git commit -m "market snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+            git pull --rebase --autostash
+            git push
+          fi
