@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Daily EO pull for the FPL solver.
+
+  Runs `effective_ownership.py --auto`, which does whichever pulls are currently possible
+  and not already captured, then exits. Most days that is a no-op costing one API call.
+
+  Daily rather than weekly on purpose: the two pulls per gameweek unlock at different
+  times (the label once the deadline passes, the t=0 state once the gameweek finalises,
+  which drifts with fixture scheduling). Retrying daily lands each one shortly after it
+  becomes possible without anything having to be remembered.
+
+  The repo must stay outside ~/Desktop, ~/Documents and ~/Downloads. Those are TCC-
+  protected, and a background agent has no access to them: the interpreter blocks on
+  opendir while scanning PYTHONPATH and hangs forever rather than failing. Keeping the
+  repo elsewhere avoids needing to grant Full Disk Access to the interpreter.
+
+  launchd does not inherit a shell environment, so the interpreter is the env's python by
+  absolute path and PYTHONPATH is set explicitly - `conda activate` is not available here.
+
+  If the Mac is asleep at the scheduled time, launchd runs the job once on wake.
+
+  Install:    cp launchd/com.skyefung.fpl-eo.plist ~/Library/LaunchAgents/
+              launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.skyefung.fpl-eo.plist
+  Run now:    launchctl kickstart -p gui/$(id -u)/com.skyefung.fpl-eo
+  Uninstall:  launchctl bootout gui/$(id -u)/com.skyefung.fpl-eo
+              rm ~/Library/LaunchAgents/com.skyefung.fpl-eo.plist
+  Logs:       ~/Library/Logs/fpl-eo.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.skyefung.fpl-eo</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/miniconda3/envs/open-fpl-solver/bin/python3.13</string>
+        <string>/Users/fungs4/Self Education/open-fpl-solver/run/effective_ownership.py</string>
+        <string>--auto</string>
+        <string>--top</string>
+        <string>0</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/fungs4/Self Education/open-fpl-solver</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/fungs4/Self Education/open-fpl-solver</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/fungs4/Library/Logs/fpl-eo.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/fungs4/Library/Logs/fpl-eo.log</string>
+</dict>
+</plist>

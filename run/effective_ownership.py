@@ -26,8 +26,9 @@ Re-selecting the pool at the same gameweek you measure conditions the cohort on 
 gameweek's results, which is why the label pull must reuse a previously frozen cohort
 rather than pulling fresh standings.
 
-Note the gates differ. A fresh pull needs the gameweek finalised, because standings are
-provisional until bonus is confirmed. A --from-cohort pull needs only the deadline to have
+Note the gates differ. A fresh pull needs the gameweek finalised and the Overall league
+rebuilt, because standings are provisional until bonus is confirmed and the league tables
+are recalculated later still. A --from-cohort pull needs only the deadline to have
 passed, because picks are frozen at the deadline and do not depend on points. Automatic
 substitutions are reported separately by the API and are deliberately ignored: the model
 predicts what managers submit, not what the auto-sub engine does afterwards.
@@ -36,7 +37,9 @@ predicts what managers submit, not what the auto-sub engine does afterwards.
 import argparse
 import json
 import math
+import os
 import random
+import threading
 import time
 from datetime import UTC, datetime
 from collections import Counter
@@ -118,6 +121,15 @@ def check_finalised(session: requests.Session, bootstrap: dict, gw: int) -> list
     pending = [d["date"] for d in status.get("status", []) if d.get("event") == gw and not d.get("bonus_added")]
     if pending:
         reasons.append(f"bonus not yet added for {', '.join(pending)}")
+
+    # The cohort is read from the Overall league, and league tables are recalculated on their
+    # own schedule - after data_checked and bonus, not with them. Freezing in that window
+    # captures the *previous* gameweek's ordering while every other gate reads ready, and the
+    # existing-output guard means it would never be revisited. Empty means not yet rebuilt;
+    # any non-empty marker (observed as "Updated") counts as done, so an unrecognised value
+    # does not block the pull forever.
+    if not str(status.get("leagues") or "").strip():
+        reasons.append("league tables not yet updated (standings still show the previous ranking)")
     return reasons
 
 
@@ -257,21 +269,46 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0, help="seed for page sampling (default: 0)")
     parser.add_argument("--top", type=int, default=30, help="rows to print (default: 30)")
     parser.add_argument("--from-cohort", type=int, metavar="GW", default=None, help="reuse the cohort frozen at that gameweek instead of pulling fresh standings (label pull)")
+    parser.add_argument("--timeout", type=float, default=45.0, help="abort after this many minutes, 0 to disable (default: 45)")
+    parser.add_argument("--auto", action="store_true", help="do whichever pulls are possible and not yet captured (for scheduled runs)")
+    parser.add_argument("--auto-window", type=int, default=3, help="with --auto, how many recent gameweeks to consider (default: 3)")
+    parser.add_argument("--overwrite", action="store_true", help="redo a pull whose output already exists")
     parser.add_argument("--force", action="store_true", help="run even if the gameweek is not finalised")
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
-    session = build_session(args.workers)
+def arm_timeout(minutes: float) -> None:
+    """Hard wall-clock cap. launchd imposes no runtime limit, so an unattended run that
+    stalls - a degraded API plus retries across thousands of requests - would otherwise sit
+    there indefinitely. Exits 2 so a scheduled run reports failure rather than hanging."""
+    if minutes <= 0:
+        return
 
-    bootstrap = fetch(session, f"{API}/bootstrap-static/")
-    if bootstrap is None:
-        raise SystemExit("Could not reach the FPL API.")
-    gw = resolve_gameweek(bootstrap, args.gw)
+    def bail() -> None:
+        print(f"\nTIMEOUT: exceeded {minutes:g} min - aborting.", flush=True)
+        os._exit(2)
 
+    timer = threading.Timer(minutes * 60, bail)
+    timer.daemon = True
+    timer.start()
+
+
+def run_pull(session: requests.Session, bootstrap: dict, args: argparse.Namespace, gw: int, from_cohort: int | None, strict: bool = True) -> bool:
+    """One EO pull. Returns True if it wrote output, False if it was skipped.
+
+    With strict=False a closed gate is a skip rather than an error, which is what --auto
+    needs: it walks recent gameweeks and does whatever is currently possible.
+    """
     pool, sample_pages = resolve_scope(args)
-    label_pull = args.from_cohort is not None
+    label_pull = from_cohort is not None
+    tag = tag_for(gw, pool, sample_pages, from_cohort)
+
+    # The guard: identical inputs give identical output, so re-running daily would burn
+    # thousands of requests to rewrite the same file.
+    out_path = OUT_DIR / f"eo_{tag}.csv"
+    if out_path.exists() and not args.overwrite:
+        print(f"GW{gw}{f' (cohort {from_cohort})' if label_pull else ''}: already captured at {out_path.name} - skipping. Use --overwrite to redo.")
+        return False
 
     if label_pull:
         reasons = check_deadline_passed(bootstrap, gw)
@@ -281,15 +318,25 @@ def main() -> None:
         advice = "Standings are provisional until bonus is confirmed."
     if reasons:
         message = f"Gameweek {gw}: {'; '.join(reasons)}."
-        if not args.force:
+        if args.force:
+            print(f"WARNING: {message} Results are provisional.\n")
+        elif strict:
             raise SystemExit(f"{message}\n{advice} Re-run later, or pass --force.")
-        print(f"WARNING: {message} Results are provisional.\n")
+        else:
+            print(f"GW{gw}{f' (cohort {from_cohort})' if label_pull else ''}: not ready - {'; '.join(reasons)}")
+            return False
 
     start = time.time()
     if label_pull:
         pages = []
-        entry_ids, cohort_source = load_cohort(args.from_cohort, pool, sample_pages)
-        print(f"Gameweek {gw} | cohort frozen at GW{args.from_cohort} ({cohort_source}) | {len(entry_ids):,} managers")
+        try:
+            entry_ids, cohort_source = load_cohort(from_cohort, pool, sample_pages)
+        except SystemExit:
+            if strict:
+                raise
+            print(f"GW{gw}: no frozen GW{from_cohort} cohort yet - skipping label pull")
+            return False
+        print(f"Gameweek {gw} | cohort frozen at GW{from_cohort} ({cohort_source}) | {len(entry_ids):,} managers")
         print(f"Estimated runtime ~{len(entry_ids) / (2.3 * args.workers) / 60:.1f} min\n")
     else:
         pages = select_pages(pool, sample_pages, args.seed)
@@ -298,16 +345,21 @@ def main() -> None:
         print(f"Gameweek {gw} | rank band top {pool:,} | {len(pages):,} pages -> ~{expected:,} managers")
         print(f"Estimated runtime ~{(len(pages) + expected) / (2.3 * args.workers) / 60:.1f} min\n")
         entry_ids = fetch_cohort(session, pages, args.workers)
+
     squads = fetch_many(session, [f"{API}/entry/{e}/event/{gw}/picks/" for e in entry_ids], args.workers, "picks")
     tallies, sampled, chips = aggregate(squads)
     if sampled == 0:
-        raise SystemExit("No squads retrieved - the gameweek may predate the cohort's entries.")
+        message = "No squads retrieved - the gameweek may predate the cohort's entries."
+        if strict:
+            raise SystemExit(message)
+        # Under --auto this must not abort the run: the remaining gameweeks in the window
+        # are independent, and a transient API failure here would otherwise cost them too.
+        print(f"GW{gw}{f' (cohort {from_cohort})' if label_pull else ''}: {message}")
+        return False
 
     table = build_table(bootstrap, tallies, sampled)
-
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    tag = tag_for(gw, pool, sample_pages, args.from_cohort)
-    table.to_csv(OUT_DIR / f"eo_{tag}.csv", index=False)
+    table.to_csv(out_path, index=False)
     meta = {
         "gameweek": gw,
         "pool": pool,
@@ -325,18 +377,61 @@ def main() -> None:
     }
     (OUT_DIR / f"cohort_{tag}.json").write_text(json.dumps(meta))
 
-    missing = len(entry_ids) - sampled
-    print(f"\nSampled {sampled:,} squads ({missing:,} unavailable) in {time.time() - start:.0f}s")
+    print(f"\nSampled {sampled:,} squads ({len(entry_ids) - sampled:,} unavailable) in {time.time() - start:.0f}s")
     print(f"Chips: {', '.join(f'{k} {100 * v / sampled:.1f}%' for k, v in chips.most_common())}")
     if sample_pages is not None:
         print(f"Sampled cohort - 95% margin of error at most +/-{100 * 1.96 * math.sqrt(0.25 / sampled):.2f} pts (wider for clustered picks)")
-    print(f"\nTop {args.top} by EO, gameweek {gw}, top {pool:,}:\n")
-    print(table.head(args.top).to_string(index=False))
-    print(f"\nWritten to {OUT_DIR / f'eo_{tag}.csv'}")
+    if args.top:
+        print(f"\nTop {args.top} by EO, gameweek {gw}, top {pool:,}:\n")
+        print(table.head(args.top).to_string(index=False))
+    print(f"\nWritten to {out_path}")
     if label_pull:
-        print(f"Label for GW{gw} measured against the GW{args.from_cohort} cohort")
+        print(f"Label for GW{gw} measured against the GW{from_cohort} cohort")
     else:
         print(f"Cohort IDs frozen in {OUT_DIR / f'cohort_{tag}.json'}")
+    return True
+
+
+def run_auto(session: requests.Session, bootstrap: dict, args: argparse.Namespace) -> None:
+    """Do whichever pulls are currently possible and not already captured.
+
+    Each gameweek needs two pulls, gated differently: the label (previous cohort measured in
+    this gameweek) becomes available once the deadline passes, the t=0 state once the
+    gameweek finalises. Running this daily lands each one shortly after it becomes possible,
+    and does nothing the rest of the time.
+    """
+    now = datetime.now(UTC)
+    passed = [e for e in bootstrap["events"] if datetime.fromisoformat(e["deadline_time"].replace("Z", "+00:00")) <= now]
+    if not passed:
+        print("No gameweek deadline has passed yet - nothing to do.")
+        return
+
+    recent = sorted(passed, key=lambda e: e["id"])[-args.auto_window :]
+    print(f"Auto mode: checking GW{recent[0]['id']}-{recent[-1]['id']}\n")
+
+    written = 0
+    for event in recent:
+        gw = event["id"]
+        if gw > 1:
+            written += run_pull(session, bootstrap, args, gw, gw - 1, strict=False)
+        written += run_pull(session, bootstrap, args, gw, None, strict=False)
+        print()
+    print(f"Auto mode complete: {written} pull(s) written.")
+
+
+def main() -> None:
+    args = parse_args()
+    arm_timeout(args.timeout)
+    session = build_session(args.workers)
+
+    bootstrap = fetch(session, f"{API}/bootstrap-static/")
+    if bootstrap is None:
+        raise SystemExit("Could not reach the FPL API.")
+
+    if args.auto:
+        run_auto(session, bootstrap, args)
+    else:
+        run_pull(session, bootstrap, args, resolve_gameweek(bootstrap, args.gw), args.from_cohort)
 
 
 if __name__ == "__main__":
