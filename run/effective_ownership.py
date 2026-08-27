@@ -117,10 +117,11 @@ BANDS = (
 )
 BANDS_BY_NAME = {b.name: b for b in BANDS}
 
-# r500k-1m is opt-in: `selected_by_percent` from bootstrap-static already anchors the far end of
-# the ownership curve at zero request cost. It is not a full substitute - it is ownership rather
-# than EO, and a live snapshot rather than deadline-frozen - so the band stays available.
-DEFAULT_BANDS = ("top10000", "r10k-30k", "r30k-100k", "r100k-250k", "r250k-500k")
+# The full default set spans rank 1 to 1m. `selected_by_percent` from bootstrap-static anchors the
+# far end of the *ownership* curve for free, but it is not a substitute for the r500k-1m band: it
+# carries no captaincy or bench information, and it is a live snapshot rather than a
+# deadline-frozen measurement, so it is not comparable with the other bands.
+DEFAULT_BANDS = ("top10000", "r10k-30k", "r30k-100k", "r100k-250k", "r250k-500k", "r500k-1m")
 
 # Fallback only - every sampled pull now measures its own design effect (estimate_clustering).
 # This is used when page labels are unavailable, e.g. a label pull whose frozen cohort predates

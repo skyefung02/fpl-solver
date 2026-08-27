@@ -80,7 +80,7 @@ strata directly.
 | `r30k-100k`     | 30,001 – 100,000  | 1,400  | 120        | 6,000  | high |
 | `r100k-250k`    | 100,001 – 250,000 | 3,000  | 120        | 6,000  | high |
 | `r250k-500k`    | 250,001 – 500,000 | 5,000  | 100        | 5,000  | medium |
-| `r500k-1m`      | 500,001 – 1,000,000 | 10,000 | 100      | 5,000  | **optional** |
+| `r500k-1m`      | 500,001 – 1,000,000 | 10,000 | 100      | 5,000  | medium |
 
 `r10k-30k` and `r30k-100k` replace an original single `r10k-100k` stratum, split once the GW1
 design effects came in (§6). That band spanned a 10× rank range — by far the widest in log terms —
@@ -96,26 +96,22 @@ should reproduce it.
 
 Cumulative bands remain derivable post-hoc as a size-weighted mean over strata.
 
-### 3.2 The 500k–1m stratum is optional
+### 3.2 The 500k–1m stratum
 
-`selected_by_percent` is already pulled from `bootstrap-static` every run and stored as
-`global_owned` in `build_table()`. It anchors the far end of the ownership curve at zero marginal
-request cost. The curve bends between roughly 1k and 250k; 500k–1m is close to flat and close to
-free.
+In the default set. It was originally scoped as opt-in on the argument that
+`selected_by_percent` — already pulled from `bootstrap-static` every run and stored as
+`global_owned` — anchors the far end of the ownership curve for free, and that the curve is
+nearly flat past 500k.
 
-Two caveats that stop it being a full substitute, which is why the stratum is retained as an
-opt-in tier rather than deleted:
+That argument does not survive contact with what the band is for. `selected_by_percent` is
+**ownership only**: no captaincy, no bench multipliers. GW1 showed captaincy carrying signal that
+ownership does not — Haaland's captaincy climbs 21.8% → 35.2% across the bands while his
+ownership moves far less — so the free proxy cannot stand in for a measured band at the far end.
+It is also a **live snapshot** rather than a deadline-frozen measurement, which makes it
+non-comparable with every other band in the set.
 
-- `selected_by_percent` is **ownership**, not EO — no captaincy, no bench multipliers.
-- It is a **live snapshot**, not frozen at the deadline, so it is not directly comparable to a
-  deadline-frozen band measurement.
-
-Recommendation: run the four higher-priority strata every gameweek; enable `r500k-1m` only if the
-fitted rank-response curve turns out to still be bending at 500k.
-
-**Exception, applied at GW1:** the band is off by default in steady state but *was* pulled for the
-GW1 backfill. The asymmetry is the point — GW1 is unrepeatable and the stratum costs ~5,100
-requests, so buying the option was cheap and declining it would have been permanent.
+Cost is ~10,100 requests per gameweek (~2 min), against a full-set runtime that stays well inside
+the timeout. The band is cheap, and it is the only anchor for the mass end of the captaincy curve.
 
 ### 3.3 Stratified systematic page sampling
 
@@ -216,17 +212,17 @@ Throughput assumption: 2.3 req/s/worker × 24 workers = 55.2 req/s (the script's
 | Stratum | t=0 requests | label requests |
 |---|---|---|
 | `top10000`   | 10,200 | 10,000 |
-| `r10k-100k`  |  9,180 |  9,000 |
+| `r10k-30k`   |  5,100 |  5,000 |
+| `r30k-100k`  |  6,120 |  6,000 |
 | `r100k-250k` |  6,120 |  6,000 |
 | `r250k-500k` |  5,100 |  5,000 |
 | `r500k-1m`   |  5,100 |  5,000 |
-| **Total (all 5)** | **35,700** | **35,000** |
+| **Total (default set)** | **37,740** | **37,000** |
 
-- t=0 pull: ~10.8 min · label pull: ~10.6 min · both: **~21.3 min** per gameweek
-- Four-stratum configuration (no `r500k-1m`): ~18 min per gameweek
-- Worst case — `--auto-window 3` with nothing yet captured: **~64 min**, which exceeds the
-  `--timeout 45` default. Steady-state runs are almost all cheap skips, so this bites only on a
-  first run or a catch-up after downtime.
+Per gameweek: **74,740 requests**. At the 55.2 req/s the estimator assumes, that is 11.4 min for
+the t=0 pull, 11.2 min for the label pull, and 68 min for a 3-gameweek catch-up — inside the
+150 min timeout. At the ~88 req/s actually observed, 14.2 min per gameweek and 42 min for a
+catch-up.
 
 Deep pagination was verified working: page 20,000 returns HTTP 200 with `has_next: true`.
 
