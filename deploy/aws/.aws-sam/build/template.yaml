@@ -1,0 +1,177 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'FPL market snapshotter. Polls bootstrap-static on a fixed cadence and
+  writes the raw payload to S3. Replaces a GitHub Actions cron that delivered only
+  ~72% of its scheduled runs; missed samples are permanently unrecoverable, so scheduling
+  reliability is the whole point of this stack, and the alarms below are weighted
+  accordingly.
+
+  '
+Parameters:
+  AlertEmail:
+    Type: String
+    Description: Address for alarm notifications. You must confirm the subscription
+      email.
+  ScheduleExpression:
+    Type: String
+    Default: rate(5 minutes)
+    Description: 'Flat cadence, deliberately not split into sparse/dense periods.
+      Densifying near a deadline would save a trivial amount (the whole thing sits
+      inside the free tier either way) and would require the schedule to track deadlines
+      that move between gameweeks.
+
+      5 minutes, not 10, because bootstrap-static is CDN-cached with max-age=300.
+      Polling every 10 minutes can skip an entire cache generation, permanently losing
+      that step of the trajectory. Observed behaviour is worse than the header suggests
+      - one payload was served unchanged for over 13 minutes, and Age has been seen
+      at 308 - so generation lifetime is variable and 5 minutes is the only cadence
+      that reliably catches each one. The extra cost is a few cents a month in S3.
+
+      '
+  MinRunsPerHour:
+    Type: Number
+    Default: 6
+    Description: 'Absence-alarm threshold: alarm when fewer than this many invocations
+      occur in an hour. Set to roughly HALF the expected rate, not the rate itself
+      - invocations land either side of the hour boundary, so a threshold equal to
+      the expected count would alarm on normal jitter and train you to ignore it.
+
+      '
+Resources:
+  RawBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName:
+        Fn::Sub: fpl-market-raw-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+      - Protocol: email
+        Endpoint:
+          Ref: AlertEmail
+  ScheduleDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+  CollectorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: CollectorFunction
+      Handler: app.handler
+      Runtime: python3.13
+      Architectures:
+      - arm64
+      MemorySize: 256
+      Timeout: 30
+      Environment:
+        Variables:
+          BUCKET:
+            Ref: RawBucket
+          PREFIX: raw
+      Policies:
+      - Statement:
+        - Effect: Allow
+          Action: s3:PutObject
+          Resource:
+            Fn::Sub: ${RawBucket.Arn}/raw/*
+      Events:
+        Tick:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression:
+              Ref: ScheduleExpression
+            FlexibleTimeWindow:
+              Mode: 'OFF'
+            RetryPolicy:
+              MaximumRetryAttempts: 3
+              MaximumEventAgeInSeconds: 300
+            DeadLetterConfig:
+              Arn:
+                Fn::GetAtt:
+                - ScheduleDlq
+                - Arn
+    Metadata:
+      SamResourceId: CollectorFunction
+  NoRunsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Collector is not being invoked - schedule delivery has stopped
+      Namespace: AWS/Lambda
+      MetricName: Invocations
+      Dimensions:
+      - Name: FunctionName
+        Value:
+          Ref: CollectorFunction
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold:
+        Ref: MinRunsPerHour
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+      - Ref: AlertTopic
+      OKActions:
+      - Ref: AlertTopic
+  ErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Collector invocations are failing
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+      - Name: FunctionName
+        Value:
+          Ref: CollectorFunction
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+      - Ref: AlertTopic
+  DlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Scheduler failed to deliver an invocation
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+      - Name: QueueName
+        Value:
+          Fn::GetAtt:
+          - ScheduleDlq
+          - QueueName
+      Statistic: Maximum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+      - Ref: AlertTopic
+Outputs:
+  BucketName:
+    Description: Raw snapshot bucket
+    Value:
+      Ref: RawBucket
+  FunctionName:
+    Value:
+      Ref: CollectorFunction
+  SyncCommand:
+    Description: Pull everything down locally for processing
+    Value:
+      Fn::Sub: aws s3 sync s3://${RawBucket}/raw ./data/market_raw
