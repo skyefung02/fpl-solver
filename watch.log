@@ -1,0 +1,141 @@
+2026-08-28 09:56:07Z | GW2 | deadline in 7.6h | 9,318,774 in (+0 since 2026-08-28T09:53:46.284Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 10:06:07Z | GW2 | deadline in 7.4h | 9,318,774 in (+0 since 2026-08-28T09:53:46.284Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 10:16:07Z | GW2 | deadline in 7.2h | 9,347,298 in (+28,524 since 2026-08-28T09:53:46.284Z)
+  wrote market_20260828T101607834Z.csv.gz (11KB, 103 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 10:26:08Z | GW2 | deadline in 7.1h | 9,375,505 in (+28,207 since 2026-08-28T10:16:07.834Z)
+  wrote market_20260828T102608078Z.csv.gz (11KB, 104 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 10:36:08Z | GW2 | deadline in 6.9h | 9,404,930 in (+29,425 since 2026-08-28T10:26:08.078Z)
+  wrote market_20260828T103608301Z.csv.gz (11KB, 105 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 10:46:08Z | GW2 | deadline in 6.7h | 9,404,930 in (+0 since 2026-08-28T10:36:08.301Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 10:56:08Z | GW2 | deadline in 6.6h | 9,443,881 in (+38,951 since 2026-08-28T10:36:08.301Z)
+  wrote market_20260828T105608698Z.csv.gz (11KB, 106 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 11:06:08Z | GW2 | deadline in 6.4h | 9,478,865 in (+34,984 since 2026-08-28T10:56:08.698Z)
+  wrote market_20260828T110608929Z.csv.gz (11KB, 107 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 11:16:09Z | GW2 | deadline in 6.2h | 9,478,865 in (+0 since 2026-08-28T11:06:08.929Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 11:26:09Z | GW2 | deadline in 6.1h | 9,513,738 in (+34,873 since 2026-08-28T11:06:08.929Z)
+  wrote market_20260828T112609465Z.csv.gz (11KB, 108 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 11:36:09Z | GW2 | deadline in 5.9h | 9,548,873 in (+35,135 since 2026-08-28T11:26:09.465Z)
+  wrote market_20260828T113609678Z.csv.gz (11KB, 109 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 11:46:09Z | GW2 | deadline in 5.7h | 9,548,873 in (+0 since 2026-08-28T11:36:09.678Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 11:56:11Z | GW2 | deadline in 5.6h | 9,583,683 in (+34,810 since 2026-08-28T11:36:09.678Z)
+  wrote market_20260828T115611444Z.csv.gz (11KB, 110 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 12:06:12Z | GW2 | deadline in 5.4h | 9,618,776 in (+35,093 since 2026-08-28T11:56:11.444Z)
+  wrote market_20260828T120612920Z.csv.gz (11KB, 111 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 12:16:14Z | GW2 | deadline in 5.2h | 9,618,776 in (+0 since 2026-08-28T12:06:12.920Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 12:26:15Z | GW2 | deadline in 5.1h | 9,654,100 in (+35,324 since 2026-08-28T12:06:12.920Z)
+  wrote market_20260828T122615978Z.csv.gz (11KB, 112 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 12:36:16Z | GW2 | deadline in 4.9h | 9,689,875 in (+35,775 since 2026-08-28T12:26:15.978Z)
+  wrote market_20260828T123616199Z.csv.gz (11KB, 113 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 12:46:16Z | GW2 | deadline in 4.7h | 9,689,875 in (+0 since 2026-08-28T12:36:16.199Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 12:56:16Z | GW2 | deadline in 4.6h | 9,725,589 in (+35,714 since 2026-08-28T12:36:16.199Z)
+  wrote market_20260828T125616550Z.csv.gz (11KB, 114 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 13:06:16Z | GW2 | deadline in 4.4h | 9,766,018 in (+40,429 since 2026-08-28T12:56:16.550Z)
+  wrote market_20260828T130616781Z.csv.gz (11KB, 115 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 13:16:17Z | GW2 | deadline in 4.2h | 9,766,018 in (+0 since 2026-08-28T13:06:16.781Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 13:26:17Z | GW2 | deadline in 4.1h | 9,804,548 in (+38,530 since 2026-08-28T13:06:16.781Z)
+  wrote market_20260828T132617201Z.csv.gz (11KB, 116 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 13:36:17Z | GW2 | deadline in 3.9h | 9,843,973 in (+39,425 since 2026-08-28T13:26:17.201Z)
+  wrote market_20260828T133617438Z.csv.gz (11KB, 117 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 13:46:17Z | GW2 | deadline in 3.7h | 9,843,973 in (+0 since 2026-08-28T13:36:17.438Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 13:56:17Z | GW2 | deadline in 3.6h | 9,884,654 in (+40,681 since 2026-08-28T13:36:17.438Z)
+  wrote market_20260828T135617801Z.csv.gz (11KB, 118 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 14:06:18Z | GW2 | deadline in 3.4h | 9,926,644 in (+41,990 since 2026-08-28T13:56:17.801Z)
+  wrote market_20260828T140618026Z.csv.gz (11KB, 119 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 14:16:18Z | GW2 | deadline in 3.2h | 9,926,644 in (+0 since 2026-08-28T14:06:18.026Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 14:26:18Z | GW2 | deadline in 3.1h | 9,971,911 in (+45,267 since 2026-08-28T14:06:18.026Z)
+  wrote market_20260828T142618501Z.csv.gz (11KB, 120 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 14:36:18Z | GW2 | deadline in 2.9h | 10,017,759 in (+45,848 since 2026-08-28T14:26:18.501Z)
+  wrote market_20260828T143618725Z.csv.gz (11KB, 121 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 14:46:18Z | GW2 | deadline in 2.7h | 10,017,759 in (+0 since 2026-08-28T14:36:18.725Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 14:56:19Z | GW2 | deadline in 2.6h | 10,063,451 in (+45,692 since 2026-08-28T14:36:18.725Z)
+  wrote market_20260828T145619146Z.csv.gz (11KB, 122 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 15:06:19Z | GW2 | deadline in 2.4h | 10,109,582 in (+46,131 since 2026-08-28T14:56:19.146Z)
+  wrote market_20260828T150619308Z.csv.gz (11KB, 123 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 15:16:19Z | GW2 | deadline in 2.2h | 10,109,582 in (+0 since 2026-08-28T15:06:19.308Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 15:26:19Z | GW2 | deadline in 2.1h | 10,158,616 in (+49,034 since 2026-08-28T15:06:19.308Z)
+  wrote market_20260828T152619709Z.csv.gz (11KB, 124 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 15:36:19Z | GW2 | deadline in 1.9h | 10,219,360 in (+60,744 since 2026-08-28T15:26:19.709Z)
+  wrote market_20260828T153619968Z.csv.gz (11KB, 125 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 15:46:20Z | GW2 | deadline in 1.7h | 10,219,360 in (+0 since 2026-08-28T15:36:19.968Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 15:56:20Z | GW2 | deadline in 1.6h | 10,285,094 in (+65,734 since 2026-08-28T15:36:19.968Z)
+  wrote market_20260828T155620408Z.csv.gz (11KB, 126 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 16:06:20Z | GW2 | deadline in 1.4h | 10,350,598 in (+65,504 since 2026-08-28T15:56:20.408Z)
+  wrote market_20260828T160620672Z.csv.gz (11KB, 127 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 16:16:20Z | GW2 | deadline in 1.2h | 10,350,598 in (+0 since 2026-08-28T16:06:20.672Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 16:26:21Z | GW2 | deadline in 1.1h | 10,417,729 in (+67,131 since 2026-08-28T16:06:20.672Z)
+  wrote market_20260828T162621090Z.csv.gz (11KB, 128 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 16:36:21Z | GW2 | deadline in 0.9h | 10,487,009 in (+69,280 since 2026-08-28T16:26:21.090Z)
+  wrote market_20260828T163621333Z.csv.gz (11KB, 129 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 16:46:21Z | GW2 | deadline in 0.7h | 10,487,009 in (+0 since 2026-08-28T16:36:21.333Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 16:56:21Z | GW2 | deadline in 0.6h | 10,560,237 in (+73,228 since 2026-08-28T16:36:21.333Z)
+  wrote market_20260828T165621842Z.csv.gz (11KB, 130 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 17:06:22Z | GW2 | deadline in 0.4h | 10,560,237 in (+0 since 2026-08-28T16:56:21.842Z)
+  payload identical to last snapshot (CDN cache) - skipped
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 17:16:22Z | GW2 | deadline in 0.2h | 10,641,595 in (+81,358 since 2026-08-28T16:56:21.842Z)
+  wrote market_20260828T171622247Z.csv.gz (11KB, 131 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 17:26:22Z | GW2 | deadline in 0.1h | 10,727,201 in (+85,606 since 2026-08-28T17:16:22.247Z)
+  wrote market_20260828T172622472Z.csv.gz (11KB, 132 this window)
+  ...inside the dense window, next poll in 10.0 min
+2026-08-28 17:36:22Z | GW3 | deadline in 167.9h | 10,727,201 in (no prior snapshot)
+  wrote market_20260828T173622700Z.csv.gz (11KB, 1 this window)
+Outside the 8.0h dense window - stopping until the next scheduled run.
