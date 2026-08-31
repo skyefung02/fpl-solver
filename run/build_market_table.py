@@ -10,17 +10,18 @@ back-converted into synthetic raw JSON. The legacy parts carry only PLAYER_FIELD
 column derived from a field outside that list is simply absent for the early gameweeks; that
 is a real limitation of the old collector and is surfaced rather than papered over.
 
-Typical use:
+Both sources now live in S3: raw/ holds the Lambda payloads, legacy/ holds the compacted
+GitHub windows migrated off the `data` branch. One sync gets everything.
 
-    aws s3 sync s3://<bucket>/raw ./data/market_raw
-    python run/build_market_table.py --raw data/market_raw \\
-        --legacy /path/to/data-branch/snapshots -o data/market_table.parquet
+    aws s3 sync s3://<bucket> ./data/market
+    python run/build_market_table.py --raw data/market/raw \\
+        --legacy data/market/legacy -o data/market_table.parquet
 """
 
 import argparse
 import gzip
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -45,6 +46,9 @@ PLAYER_FIELDS = [
     "form",
 ]
 LEAD_COLUMNS = ["captured_at", "event", "secs_to_deadline", "source", "cdn_age"]
+# obs_time is derived after both sources are concatenated, so it is not in LEAD_COLUMNS
+# (which is the set the legacy reader must find in a CSV part).
+OUTPUT_COLUMNS = ["captured_at", "obs_time", "event", "secs_to_deadline", "source", "cdn_age"] + PLAYER_FIELDS
 
 # The API returns several numeric quantities as JSON strings ("38.3"), while pandas infers them
 # as floats when reading the legacy CSV. Left alone the two sources concat to object dtype and
@@ -97,7 +101,11 @@ def read_raw(path: Path) -> pd.DataFrame | None:
     if not elements:
         return None
     now, cdn_age = captured_at_from_key(path)
-    event = pending_event(payload.get("events", []), now)
+    # A cached payload describes the market as it stood cdn_age seconds ago, so the window it
+    # belongs to follows from that instant, not from the fetch. Using the fetch time labels a
+    # pre-deadline payload with the next gameweek whenever a stale copy straddles a deadline.
+    observed = now - timedelta(seconds=cdn_age) if cdn_age is not None else now
+    event = pending_event(payload.get("events", []), observed)
     if event is None:
         return None  # season over; nothing pending to attribute the transfers to
 
@@ -108,7 +116,7 @@ def read_raw(path: Path) -> pd.DataFrame | None:
     frame = frame[PLAYER_FIELDS].copy()
     frame.insert(0, "cdn_age", cdn_age if cdn_age is not None else pd.NA)
     frame.insert(0, "source", "s3")
-    frame.insert(0, "secs_to_deadline", int((deadline_of(event) - now).total_seconds()))
+    frame.insert(0, "secs_to_deadline", int((deadline_of(event) - observed).total_seconds()))
     frame.insert(0, "event", event["id"])
     frame.insert(0, "captured_at", now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z")
     return normalise(frame)
@@ -127,7 +135,66 @@ def read_legacy(path: Path) -> pd.DataFrame | None:
     return normalise(frame[LEAD_COLUMNS + PLAYER_FIELDS].copy())
 
 
-def collect(raw_dir: Path | None, legacy_dir: Path | None) -> pd.DataFrame:
+def add_obs_time(table: pd.DataFrame) -> pd.DataFrame:
+    """When the numbers were true, as distinct from when we fetched them.
+
+    bootstrap-static is CDN-cached, so a fetch often returns a copy minted earlier - median
+    157s over the GW2-GW3 overlap, and up to 2252s. Two fetches five minutes apart can carry
+    payloads one second apart, and ordering on captured_at misorders 130 of 874 consecutive
+    pairs outright. Any feature built as a difference between neighbouring rows (transfer
+    rate, price momentum, the deadline ramp) is computed backwards at those points, so
+    obs_time rather than captured_at is the column to sort and diff on.
+
+    The legacy collector never read the Age header, so its rows fall back to captured_at;
+    their null cdn_age is the signal that the timing is approximate to within ~40 minutes.
+    """
+    captured = pd.to_datetime(table["captured_at"], format="ISO8601", utc=True)
+    lag = pd.to_timedelta(table["cdn_age"].fillna(0).astype("int64"), unit="s")
+    stamp = (captured - lag).dt.strftime("%Y-%m-%dT%H:%M:%S.%f").str[:-3] + "Z"
+    table["obs_time"] = stamp.astype("string")
+    return table
+
+
+def drop_stale_rollover(table: pd.DataFrame) -> tuple[pd.DataFrame, list[tuple]]:
+    """Drop snapshots that still carry the previous window's counters.
+
+    `event` flips at the deadline but transfers_*_event does not reset at the same instant.
+    At the GW2->GW3 boundary the API served GW2's closing total (10,727,201) under event 3
+    for at least fifteen minutes before resetting to 30,524. Both collectors recorded this
+    identically, so it is API behaviour, not a pipeline fault - which is why it is corrected
+    here rather than in either collector.
+
+    Left in, a window's net-transfer feature reads as a phantom nine-million outflow at
+    exactly the boundary a model is trying to predict across, and it recurs every deadline.
+
+    Within one event the summed counter is non-decreasing, so a leading snapshot whose total
+    exceeds anything that follows cannot belong to this window. Only leading snapshots are
+    considered: a mid-window anomaly is a different problem and is left visible.
+    """
+    totals = (
+        table.groupby(["event", "captured_at"], dropna=False)
+        .agg(total=("transfers_in_event", "sum"), obs_time=("obs_time", "first"))
+        .reset_index()
+        .sort_values(["event", "obs_time"], kind="mergesort")
+    )
+    stale: list[tuple] = []
+    for event, group in totals.groupby("event", dropna=False, sort=True):
+        values = group["total"].astype("float64").to_numpy()
+        fetched = group["captured_at"].to_numpy()
+        observed = group["obs_time"].to_numpy()
+        for i in range(len(values) - 1):
+            if values[i] > values[i + 1 :].min():
+                stale.append((event, fetched[i], observed[i], values[i]))
+            else:
+                break  # the window has started counting; anything later is this window's
+    if not stale:
+        return table, []
+    keys = {(event, fetch) for event, fetch, _, _ in stale}
+    mask = pd.Series(list(zip(table["event"], table["captured_at"])), index=table.index).isin(keys)
+    return table.loc[~mask].copy(), stale
+
+
+def collect(raw_dir: Path | None, legacy_dir: Path | None, keep_rollover: bool = False) -> pd.DataFrame:
     frames, skipped = [], 0
 
     if raw_dir:
@@ -172,7 +239,28 @@ def collect(raw_dir: Path | None, legacy_dir: Path | None) -> pd.DataFrame:
         .drop(columns="_rank")
         .reset_index(drop=True)
     )
-    return table
+
+    table = add_obs_time(table)
+    # A cached payload fetched twice is one observation, not two. Those rows differ in
+    # captured_at so the dedupe above cannot see them, but they share an obs_time to the
+    # millisecond - and left in they double-count that instant in any per-snapshot aggregate.
+    before = table["obs_time"].nunique(), len(table)
+    table = (
+        table.sort_values(["obs_time", "id", "captured_at"], kind="mergesort")
+        .drop_duplicates(["obs_time", "id"], keep="first")
+        .reset_index(drop=True)
+    )
+    if len(table) != before[1]:
+        print(f"({before[1] - len(table):,} row(s) dropped: same cached payload fetched more than once)")
+
+    if not keep_rollover:
+        table, stale = drop_stale_rollover(table)
+        for event, fetch, observed, total in stale:
+            print(f"  dropped {fetch} (obs {observed}, event {event}): counters still at {total:,.0f}, not yet reset")
+        if stale:
+            print(f"({len(stale)} stale-rollover snapshot(s) dropped; --keep-rollover to retain)")
+
+    return table[OUTPUT_COLUMNS].reset_index(drop=True)
 
 
 def main() -> None:
@@ -180,9 +268,11 @@ def main() -> None:
     parser.add_argument("--raw", type=Path, default=None, help="directory of S3 raw/*.json.gz objects")
     parser.add_argument("--legacy", type=Path, default=None, help="data-branch snapshots/ directory")
     parser.add_argument("-o", "--out", type=Path, default=Path("data/market_table.parquet"))
+    parser.add_argument("--keep-rollover", action="store_true",
+                        help="keep post-deadline snapshots whose counters had not reset yet")
     args = parser.parse_args()
 
-    table = collect(args.raw, args.legacy)
+    table = collect(args.raw, args.legacy, keep_rollover=args.keep_rollover)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     table.to_parquet(args.out, index=False, compression="zstd")
 
