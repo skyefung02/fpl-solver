@@ -78,11 +78,12 @@ def load_bands(eo_dir: Path, gameweek: int) -> list[dict]:
 
 
 def captured_utc(band: dict) -> datetime:
-    """Cohort stamps are written with time.strftime, i.e. naive local time.
+    """Cohort stamps are UTC with an explicit marker; naive ones are pre-migration.
 
-    Everything else in the pipeline is UTC. Reading these as UTC would misplace them by the
-    machine's offset - ten hours in Melbourne - and silently compare against a snapshot from
-    the wrong side of a deadline.
+    Older cohorts were written with time.strftime, i.e. naive local time, which reads ten
+    hours out in Melbourne and silently matches a snapshot from the wrong side of a deadline.
+    Those files have been converted, but astimezone still resolves a naive stamp as local so
+    that an unmigrated copy is handled rather than misread.
     """
     return datetime.fromisoformat(band["captured_at"]).astimezone(UTC)
 

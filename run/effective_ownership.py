@@ -556,7 +556,10 @@ def run_pull(session: requests.Session, bootstrap: dict, args: argparse.Namespac
         "seed": args.seed,
         "forced": args.force,
         "chips": dict(chips),
-        "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        # UTC with an explicit marker. time.strftime writes naive local time, which reads as
+        # a different instant depending on where and when it was produced - Melbourne shifts
+        # by an hour at the October DST change - and nothing downstream could detect it.
+        "captured_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "cohort_source": cohort_source,
         # Measured design effect, or None when the band is unsampled or page labels are absent.
         "clustering": clustering,
