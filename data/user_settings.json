@@ -1,5 +1,5 @@
 {
-    "datasource": "projection_all_metrics",
+    "datasource": "projection",
     "team_data": "id",
     "team_id": 79999,
     "horizon": 1,
@@ -11,18 +11,24 @@
         "4": 0,
         "5": 0
     },
+    "bench_weights": {
+        "0": 0.005,
+        "1": 0.12,
+        "2": 0.04,
+        "3": 0.003
+    },
     "safe_min_price": 7.5,
-    "xmin_lb": 135,
+    "xmin_lb": 270,
     "ev_per_price_cutoff": 30,
     "keep_top_ev_percent": 10,
     "banned": [], 
     "locked": [],
     "use_wc": [],
     "use_bb": [],
-    "use_fh": [],
+    "use_fh": [3],
     "use_tc": [],
     "solver": "gurobi",
     "use_cmd": true,
     "verbose": true,
-    "num_iterations": 5
+    "num_iterations": 1
 }

@@ -195,7 +195,7 @@ def run_parallel_solves(chip_combinations, max_workers=None, suppress_output=Tru
         "print_transfer_chip_summary": False,
         "print_squads": False,
         "parallel": "off",
-        "horizon": 3,
+        "horizon": 1,
         "gap": 0.002,
         "num_iterations": 1,
         "threads": 1
@@ -307,7 +307,7 @@ if __name__ == "__main__":
     # different xP values each time. Players that appear as transfers across
     # most runs are robust picks; those that appear rarely are marginal.
     # Results are ranked by score and saved to chip_solve.csv.
-    N_RUNS = 1000
+    N_RUNS = 5
     scenarios = [
         {
             "randomized": True,
